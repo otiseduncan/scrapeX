@@ -1322,6 +1322,55 @@ function Resolve-Inspection-View {
 }
 
 
+function Scroll-ElementIntoView {
+    param([System.Windows.Automation.AutomationElement]$Element)
+
+    if ($null -eq $Element) { return $false }
+    try {
+        $scrollItem = $Element.GetCurrentPattern(
+            [System.Windows.Automation.ScrollItemPattern]::Pattern
+        )
+        if ($null -ne $scrollItem) {
+            $scrollItem.ScrollIntoView()
+            Start-Sleep -Milliseconds 220
+            return $true
+        }
+    }
+    catch {}
+    return $false
+}
+
+
+function Point-Hits-Element {
+    param(
+        [System.Windows.Automation.AutomationElement]$Element,
+        [int]$X,
+        [int]$Y
+    )
+
+    # A row control can be clipped by its scroll viewport or covered by a
+    # sticky header/modal overlay. UI Automation still reports a bounding
+    # rectangle for it, so clicking blind lands on whatever is actually
+    # painted there while the caller believes the row was clicked. Resolve
+    # what is really at the point and require it to be the target or part of
+    # it.
+    $targetKey = Element-Key -Element $Element
+    if ($null -eq $targetKey) { return $false }
+    try {
+        $point = New-Object System.Windows.Point($X, $Y)
+        $hit = [System.Windows.Automation.AutomationElement]::FromPoint($point)
+    }
+    catch { return $false }
+    if ($null -eq $hit) { return $false }
+
+    if ((Element-Key -Element $hit) -eq $targetKey) { return $true }
+    foreach ($ancestor in @(Ancestor-Chain -Element $hit -Limit 12)) {
+        if ($ancestor.key -eq $targetKey) { return $true }
+    }
+    return $false
+}
+
+
 function Click-ElementCenter {
     param(
         [System.Windows.Automation.AutomationElement]$Element
@@ -1332,13 +1381,19 @@ function Click-ElementCenter {
     }
 
     try {
+        # Bring the control into the viewport before measuring it: a row below
+        # the fold otherwise yields coordinates that are clipped or outside the
+        # window entirely.
+        Scroll-ElementIntoView -Element $Element | Out-Null
+
         $rect = $Element.Current.BoundingRectangle
 
         if (
             $rect.Width -le 0 -or
             $rect.Height -le 0 -or
             [double]::IsInfinity($rect.Left) -or
-            [double]::IsInfinity($rect.Top)
+            [double]::IsInfinity($rect.Top) -or
+            $Element.Current.IsOffscreen
         ) {
             return $false
         }
@@ -1346,8 +1401,42 @@ function Click-ElementCenter {
         $x = [int]($rect.Left + ($rect.Width / 2))
         $y = [int]($rect.Top + ($rect.Height / 2))
 
+        if (-not (Point-Hits-Element -Element $Element -X $x -Y $y)) {
+            # The centre is obscured or clipped. Try points inside the control
+            # that are more likely to be exposed before giving up, rather than
+            # clicking something else and reporting success.
+            $fallbacks = @(
+                @{ x = [int]($rect.Left + [Math]::Min(24, $rect.Width / 4)); y = $y },
+                @{ x = $x; y = [int]($rect.Top + [Math]::Min(12, $rect.Height / 4)) },
+                @{
+                    x = [int]($rect.Left + $rect.Width - [Math]::Min(24, $rect.Width / 4))
+                    y = $y
+                }
+            )
+            $resolved = $false
+            foreach ($candidate in $fallbacks) {
+                if (Point-Hits-Element -Element $Element -X $candidate.x -Y $candidate.y) {
+                    $x = $candidate.x
+                    $y = $candidate.y
+                    $resolved = $true
+                    break
+                }
+            }
+            if (-not $resolved) {
+                return $false
+            }
+        }
+
         [NativeWindow]::SetCursorPos($x, $y) | Out-Null
         Start-Sleep -Milliseconds 120
+
+        # The operator shares this physical cursor. If it moved away from the
+        # point between positioning and clicking, someone else is driving the
+        # mouse and this click would land somewhere unintended.
+        $confirmed = Point-Hits-Element -Element $Element -X $x -Y $y
+        if (-not $confirmed) {
+            return $false
+        }
 
         [NativeWindow]::mouse_event(
             $MOUSEEVENTF_LEFTDOWN,
@@ -1431,24 +1520,11 @@ function Invoke-Element {
     }
     catch {}
 
-    try {
-        $rect = $Element.Current.BoundingRectangle
-        if ($rect.Width -gt 0 -and $rect.Height -gt 0) {
-            $x = [int]($rect.Left + ($rect.Width / 2))
-            $y = [int]($rect.Top + ($rect.Height / 2))
-            [NativeWindow]::SetCursorPos($x, $y) | Out-Null
-            [NativeWindow]::mouse_event(
-                $MOUSEEVENTF_LEFTDOWN, 0, 0, 0, [UIntPtr]::Zero
-            )
-            [NativeWindow]::mouse_event(
-                $MOUSEEVENTF_LEFTUP, 0, 0, 0, [UIntPtr]::Zero
-            )
-            return $true
-        }
-    }
-    catch {}
-
-    return $false
+    # Physical clicking is the last resort and must go through the verified
+    # path: the previous inline click reported success as soon as it moved the
+    # cursor, so a clipped or covered control looked clicked when the click had
+    # actually landed on something else.
+    return (Click-ElementCenter -Element $Element)
 }
 
 function Invoke-Search {
@@ -1939,19 +2015,28 @@ function Required-Tab-State {
     $notRequired = @($buttons | Where-Object { [string]$_.Current.Name -match '(?i)^\s*Not Required\s*$' })
     $notInstalled = @($buttons | Where-Object { [string]$_.Current.Name -match '(?i)^\s*Not Installed\s*$' })
 
+    # ADAS Map renders "Not Installed" only when that category exists for the
+    # vehicle; Required and Not Required are the invariant pair. Demanding all
+    # three made every inspection without a Not Installed tab look like the
+    # detail modal had never opened, so the runner kept re-clicking View on a
+    # modal that was already up.
     $structureConfirmed = (
         $required.Count -eq 1 -and
         $notRequired.Count -eq 1 -and
-        $notInstalled.Count -eq 1
+        $notInstalled.Count -le 1
     )
     $sameRow = $false
     if ($structureConfirmed) {
         try {
             $top = $required[0].Current.BoundingRectangle.Top
             $sameRow = (
-                [Math]::Abs($notRequired[0].Current.BoundingRectangle.Top - $top) -le 4 -and
-                [Math]::Abs($notInstalled[0].Current.BoundingRectangle.Top - $top) -le 4
+                [Math]::Abs($notRequired[0].Current.BoundingRectangle.Top - $top) -le 4
             )
+            if ($sameRow -and $notInstalled.Count -eq 1) {
+                $sameRow = (
+                    [Math]::Abs($notInstalled[0].Current.BoundingRectangle.Top - $top) -le 4
+                )
+            }
         }
         catch {}
     }
@@ -2058,7 +2143,11 @@ function Resolve-Detail-Modal {
                     $commonRect = $common.Current.BoundingRectangle
                     if ($commonRect.Width -le 0 -or $commonRect.Height -le 0) { continue }
                     $containsMarkers = $true
-                    foreach ($marker in $markers) {
+                    # "Not Installed" is absent for many inspections, so the
+                    # marker set legitimately carries a null. Reading .Current
+                    # on it throws into the enclosing catch and would silently
+                    # reject an otherwise proven modal.
+                    foreach ($marker in @($markers | Where-Object { $null -ne $_ })) {
                         $rect = $marker.Current.BoundingRectangle
                         $centerX = $rect.Left + ($rect.Width / 2)
                         $centerY = $rect.Top + ($rect.Height / 2)
@@ -3877,8 +3966,46 @@ if ($Action -eq "details") {
         Bring-To-Front -Target $target | Out-Null
         Start-Sleep -Milliseconds 120
 
+        # Each earlier attempt can make ADAS Map re-render the results table,
+        # which invalidates the View element captured before the loop. Acting
+        # on that dead reference silently does nothing while still counting as
+        # a tried strategy, so the later strategies -- including the physical
+        # click that actually works -- were being skipped. Re-resolve the exact
+        # row's View control for every attempt.
+        $viewStale = $false
+        if ($method -ne "legacy_accessible") {
+            $refreshedDocument = Find-Web-Document -ChromeRoot $target.element
+            if ($null -ne $refreshedDocument) {
+                $refreshedCurrent = Read-Current-Ro `
+                    -Root $refreshedDocument `
+                    -Ro $RoNumber `
+                    -ExpectedInspectionId $resolvedInspectionId `
+                    -ExpectedVehicleYear $ExpectedYear `
+                    -ExpectedVehicleMake $ExpectedMake `
+                    -ExpectedVehicleModel $ExpectedModel
+                if (
+                    $refreshedCurrent.found -and
+                    $refreshedCurrent.resolution_status -eq "resolved" -and
+                    $null -ne $refreshedCurrent.view_element -and
+                    ([string]$refreshedCurrent.inspection_id) -eq $resolvedInspectionId
+                ) {
+                    $view = $refreshedCurrent.view_element
+                    $document = $refreshedDocument
+                }
+                else {
+                    $viewStale = $true
+                }
+            }
+            else {
+                $viewStale = $true
+            }
+        }
+
         $attempted = $false
-        if ($method -eq "legacy_accessible") {
+        if ($viewStale) {
+            $attempted = $false
+        }
+        elseif ($method -eq "legacy_accessible") {
             $attempted = Invoke-LegacyDefaultAction -Element $view
         }
         elseif ($method -eq "invoke_pattern") {
@@ -3894,6 +4021,7 @@ if ($Action -eq "details") {
         $activationAttempts += [pscustomobject]@{
             method = $method
             attempted = $attempted
+            view_stale = $viewStale
         }
         if (-not $attempted) { continue }
 
