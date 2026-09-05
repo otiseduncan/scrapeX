@@ -653,25 +653,6 @@ class CIQClient:
         correlation = f"scrapex-{batch_id[:20]}-{item_id[:20]}"[:80]
         receipts: list[dict[str, Any]] = []
 
-        def matching_document(current: dict[str, Any]) -> dict[str, Any] | None:
-            exact = [
-                document
-                for document in self._research_documents(current)
-                if str(document.get("source_uri") or "").strip().casefold()
-                == source_uri.casefold()
-            ]
-            if len(exact) == 1:
-                return exact[0]
-            by_name = [
-                document
-                for document in self._research_documents(current)
-                if str(document.get("source_name") or "").strip().casefold()
-                == source_name.casefold()
-                or str(document.get("original_filename") or "").strip().casefold()
-                == source_name.casefold()
-            ]
-            return by_name[0] if len(by_name) == 1 else None
-
         def is_adas_map_document(document: dict[str, Any]) -> bool:
             return (
                 str(document.get("semantic_type") or "").strip().casefold()
@@ -680,8 +661,53 @@ class CIQClient:
                 == "adas_map_report"
             )
 
+        def matching_document(current: dict[str, Any]) -> dict[str, Any] | None:
+            documents = self._research_documents(current)
+            exact = [
+                document
+                for document in documents
+                if str(document.get("source_uri") or "").strip().casefold()
+                == source_uri.casefold()
+            ]
+            if len(exact) == 1:
+                return exact[0]
+            by_name = [
+                document
+                for document in documents
+                if str(document.get("source_name") or "").strip().casefold()
+                == source_name.casefold()
+                or str(document.get("original_filename") or "").strip().casefold()
+                == source_name.casefold()
+            ]
+            if len(by_name) == 1:
+                return by_name[0]
+            # An RO may already carry its ADAS Map under an earlier naming
+            # convention (for example "<RO>.pdf"). Neither the canonical URI
+            # nor the canonical filename finds it, so adopt that one existing
+            # ADAS Map document instead of importing a second copy of the same
+            # report. More than one is ambiguous and is never guessed at.
+            existing_maps = [
+                document for document in documents if is_adas_map_document(document)
+            ]
+            return existing_maps[0] if len(existing_maps) == 1 else None
+
+        def has_canonical_identity(document: dict[str, Any]) -> bool:
+            return (
+                str(document.get("source_uri") or "").strip().casefold()
+                == source_uri.casefold()
+                and str(document.get("source_name") or "").strip().casefold()
+                == source_name.casefold()
+                and str(document.get("status") or "").strip().casefold() == "validated"
+            )
+
         document = matching_document(snapshot)
-        if document is not None and not is_adas_map_document(document):
+        # Repair both a misclassified file and an ADAS Map already attached
+        # under an earlier naming convention: downstream verification finds
+        # this document by its canonical URI and filename, so an adopted
+        # legacy row is normalized to that identity rather than duplicated.
+        if document is not None and not (
+            is_adas_map_document(document) and has_canonical_identity(document)
+        ):
             document_id = str(
                 document.get("id") or document.get("document_id") or ""
             ).strip()
@@ -725,7 +751,11 @@ class CIQClient:
             receipts.extend(list(response.get("receipts") or []))
             snapshot = await self._snapshot(repair_order_id)
             document = matching_document(snapshot)
-            if document is None or not is_adas_map_document(document):
+            if (
+                document is None
+                or not is_adas_map_document(document)
+                or not has_canonical_identity(document)
+            ):
                 raise CIQReconciliationError(
                     "Calibration IQ did not verify the repaired ADAS Map classification.",
                     result={"receipts": receipts},

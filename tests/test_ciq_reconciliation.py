@@ -377,6 +377,102 @@ async def test_existing_generic_map_file_is_reclassified_in_place(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_existing_adas_map_under_legacy_name_is_adopted_not_duplicated(tmp_path):
+    """An RO whose ADAS Map was attached under an earlier naming convention
+    must be adopted and normalized, never joined by a second copy."""
+    current = snapshot()
+    current["research"] = {
+        "id": "research-1",
+        "state": "research_required",
+        "version": 5,
+    }
+    current["documents"] = [
+        {
+            "id": "doc-legacy-name",
+            "version": 1,
+            "document_type": "ADAS_MAP_REPORT",
+            "semantic_type": "ADAS_MAP_REPORT",
+            "status": "validated",
+            "source_name": "2400911578.pdf",
+            "original_filename": "2400911578_adas_map_report.pdf",
+            "storage_relative_path": "2400911578_adas_map_report.pdf",
+        }
+    ]
+    report = tmp_path / "2400911578 ADAS Map.pdf"
+    report.write_bytes(b"%PDF-1.4\n" + (b"0" * 512))
+    client = FakeCIQ(current)
+
+    result = await client.reconcile_requirements(
+        repair_order_id="ro-1",
+        requirements=["Blind Spot Sensors"],
+        batch_id="batch-1",
+        item_id="item-1",
+        inspection_id="9900001",
+        adas_map_path=str(report),
+        adas_map_ro_number="2400911578",
+    )
+
+    assert [action["operation"] for action in client.actions] == [
+        "update_document",
+        "update_research",
+    ]
+    assert len(client.snapshot["documents"]) == 1
+    adopted = client.snapshot["documents"][0]
+    assert adopted["id"] == "doc-legacy-name"
+    assert adopted["source_name"] == "2400911578 ADAS Map.pdf"
+    assert adopted["source_uri"] == (
+        "adas-si:///ADAS%20Map/2400911578/2400911578%20ADAS%20Map.pdf"
+    )
+    assert result["adas_map_attachment"]["document_id"] == "doc-legacy-name"
+
+
+@pytest.mark.asyncio
+async def test_adas_map_document_short_of_canonical_identity_is_repaired(tmp_path):
+    """A correctly classified ADAS Map that never received the canonical
+    source URI or validated status is not accepted as finished work."""
+    current = snapshot()
+    current["research"] = {
+        "id": "research-1",
+        "state": "research_in_progress",
+        "version": 5,
+    }
+    current["documents"] = [
+        {
+            "id": "doc-candidate",
+            "version": 1,
+            "document_type": "adas_map_report",
+            "semantic_type": "ADAS_MAP_REPORT",
+            "status": "candidate",
+            "source_uri": None,
+            "source_name": "2400911578 ADAS Map.pdf",
+            "original_filename": "2400911578 ADAS Map.pdf",
+        }
+    ]
+    report = tmp_path / "2400911578 ADAS Map.pdf"
+    report.write_bytes(b"%PDF-1.4\n" + (b"0" * 512))
+    client = FakeCIQ(current)
+
+    result = await client.reconcile_requirements(
+        repair_order_id="ro-1",
+        requirements=["Blind Spot Sensors"],
+        batch_id="batch-1",
+        item_id="item-1",
+        inspection_id="9900001",
+        adas_map_path=str(report),
+        adas_map_ro_number="2400911578",
+    )
+
+    assert [action["operation"] for action in client.actions] == ["update_document"]
+    repaired = client.snapshot["documents"][0]
+    assert repaired["status"] == "validated"
+    assert repaired["source_uri"] == (
+        "adas-si:///ADAS%20Map/2400911578/2400911578%20ADAS%20Map.pdf"
+    )
+    assert result["adas_map_attachment"]["document_id"] == "doc-candidate"
+    assert result["adas_map_attachment"]["status"] == "validated"
+
+
+@pytest.mark.asyncio
 async def test_existing_adas_map_attachment_is_idempotent(tmp_path):
     current = snapshot()
     current["research"] = {
