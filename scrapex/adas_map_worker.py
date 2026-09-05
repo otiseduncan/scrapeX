@@ -407,6 +407,11 @@ class AdasMapBatchRunner:
                 inspection_id=inspection_id,
                 vehicle=observed_vehicle,
                 explicit_no_calibration=explicit_none,
+                adas_map_path=(
+                    str(result.get("local_report_path") or "").strip() or None
+                ),
+                adas_map_ro_number=ro_number,
+                adas_map_source_url=source_url,
             )
         except CIQReconciliationError as exc:
             self.store.save_reconciliation(item_id, "needs_operator", exc.result, str(exc))
