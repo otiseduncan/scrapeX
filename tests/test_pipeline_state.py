@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from scrapex.db import Store
+from scrapex.db import ADAS_MAP_CONTRACT_VERSION, Store
 from scrapex.models import BatchCreate, VehicleSpec
 
 
@@ -63,7 +63,7 @@ def test_map_readiness_requires_proof_and_verified_ciq_reconciliation(tmp_path: 
         item["id"],
         "pending",
         adas_map_state="adas_map_complete",
-        adas_map_contract_version=1,
+        adas_map_contract_version=ADAS_MAP_CONTRACT_VERSION,
         adas_map_requirements_proven=1,
         requirements_json='["Front View Camera"]',
     )
@@ -116,13 +116,13 @@ def test_pipeline_summary_never_hides_map_attention(tmp_path: Path):
     first, second = store.batch(bid)["items"]
     store.set_item(
         first["id"], "complete",
-        adas_map_state="adas_map_complete", adas_map_contract_version=1,
+        adas_map_state="adas_map_complete", adas_map_contract_version=ADAS_MAP_CONTRACT_VERSION,
         adas_map_requirements_proven=1,
         ciq_reconciliation_state="complete",
     )
     store.set_item(
         second["id"], "pending",
-        adas_map_state="ro_not_found", adas_map_contract_version=1,
+        adas_map_state="ro_not_found", adas_map_contract_version=ADAS_MAP_CONTRACT_VERSION,
     )
     summary = store.pipeline_summary(bid)
     assert summary["ready"] == 1
