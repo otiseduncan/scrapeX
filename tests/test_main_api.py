@@ -110,6 +110,11 @@ def make_services(tmp_path: Path) -> AppServices:
         work_chrome=FakeWorkChrome(),
         adas_map_source=adas_source,
         adas_map_runner=FakeAdasRunner(store),
+        # Mirror build_default_services(): the production ScrapeX runtime
+        # always exposes the task-based ALLDATA Navigator. API surface tests
+        # must not accidentally exercise the dataclass's inert empty default.
+        navigator_manager=SimpleNamespace(),
+        navigator_providers={"alldata": object()},
     )
 
 
