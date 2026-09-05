@@ -1338,27 +1338,34 @@ class CIQClient:
                     result={"unverified_vehicle_fields": unverified_vehicle, "receipts": receipts},
                 )
 
-        if not isinstance(adas_map_attachment, dict) or not adas_map_attachment.get("attached"):
-            raise CIQReconciliationError(
-                "CIQ reconciliation cannot complete without an attached ADAS Map PDF."
+        if adas_map_path:
+            if (
+                not isinstance(adas_map_attachment, dict)
+                or not adas_map_attachment.get("attached")
+            ):
+                raise CIQReconciliationError(
+                    "CIQ reconciliation cannot complete without an attached ADAS Map PDF."
+                )
+            if (
+                str(adas_map_attachment.get("semantic_type") or "").strip().casefold()
+                != "adas_map_report"
+            ):
+                raise CIQReconciliationError(
+                    "CIQ reconciliation cannot complete until the document is classified as ADAS_MAP_REPORT."
+                )
+            final_research = after.get("research")
+            final_research_state = (
+                str(final_research.get("state") or "").strip().casefold()
+                if isinstance(final_research, dict)
+                else ""
             )
-        if (
-            str(adas_map_attachment.get("semantic_type") or "").strip().casefold()
-            != "adas_map_report"
-        ):
-            raise CIQReconciliationError(
-                "CIQ reconciliation cannot complete until the document is classified as ADAS_MAP_REPORT."
-            )
-        final_research = after.get("research")
-        final_research_state = (
-            str(final_research.get("state") or "").strip().casefold()
-            if isinstance(final_research, dict)
-            else ""
-        )
-        if final_research_state not in {"research_in_progress", "research_complete"}:
-            raise CIQReconciliationError(
-                "CIQ reconciliation cannot complete while research remains required."
-            )
+            if final_research_state not in {
+                "research_in_progress",
+                "research_complete",
+            }:
+                raise CIQReconciliationError(
+                    "CIQ reconciliation cannot complete while research remains required."
+                )
 
         active_ids = {
             row["key"]: [str(item.get("id")) for item in active_by_key.get(row["key"], [])]
