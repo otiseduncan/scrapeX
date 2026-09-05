@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
+
 import httpx
 
 from .config import Settings
@@ -190,6 +193,7 @@ class CIQClient:
             "add_calibration",
             "update_calibration",
             "update_research",
+            "import_document",
         }.issubset(routine):
             raise CIQReconciliationError(
                 "Calibration IQ does not advertise required reconciliation mutations."
@@ -574,6 +578,249 @@ class CIQClient:
                 )
         return body
 
+    @staticmethod
+    def _research_documents(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+        output: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        sources = [
+            snapshot.get("documents"),
+            (snapshot.get("research") or {}).get("documents")
+            if isinstance(snapshot.get("research"), dict)
+            else None,
+            (snapshot.get("research_case") or {}).get("documents")
+            if isinstance(snapshot.get("research_case"), dict)
+            else None,
+        ]
+        for items in sources:
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict) or item.get("archived_at"):
+                    continue
+                key = str(
+                    item.get("id")
+                    or item.get("document_id")
+                    or item.get("source_uri")
+                    or ""
+                ).strip()
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                output.append(item)
+        return output
+
+    async def _prepare_adas_map_evidence(
+        self,
+        *,
+        snapshot: dict[str, Any],
+        repair_order_id: str,
+        adas_map_path: str,
+        ro_number: str,
+        batch_id: str,
+        item_id: str,
+        inspection_id: str | None,
+        source_url: str | None,
+    ) -> tuple[
+        dict[str, Any],
+        dict[str, Any],
+        dict[str, Any] | None,
+        list[dict[str, Any]],
+    ]:
+        """Attach the exact canonical ADAS Map PDF and enter active research.
+
+        This is part of ADAS Map completion, not a later best-effort side effect:
+        if the document or research-state transition cannot be authoritatively
+        verified, reconciliation fails and the batch item cannot become complete.
+        """
+        report = Path(adas_map_path).expanduser()
+        if (
+            not ro_number
+            or not report.is_file()
+            or report.stat().st_size < 256
+        ):
+            raise CIQReconciliationError(
+                "The canonical ADAS Map PDF is missing or invalid."
+            )
+        with report.open("rb") as handle:
+            if handle.read(5) != b"%PDF-":
+                raise CIQReconciliationError(
+                    "The canonical ADAS Map capture is not a valid PDF."
+                )
+
+        relative = f"ADAS Map/{ro_number}/{ro_number} ADAS Map.pdf"
+        source_uri = f"adas-si:///{quote(relative)}"
+        source_name = report.name
+        correlation = f"scrapex-{batch_id[:20]}-{item_id[:20]}"[:80]
+        receipts: list[dict[str, Any]] = []
+
+        def matching_document(current: dict[str, Any]) -> dict[str, Any] | None:
+            exact = [
+                document
+                for document in self._research_documents(current)
+                if str(document.get("source_uri") or "").strip().casefold()
+                == source_uri.casefold()
+            ]
+            if len(exact) == 1:
+                return exact[0]
+            compatible = [
+                document
+                for document in self._research_documents(current)
+                if str(document.get("source_name") or "").strip().casefold()
+                == source_name.casefold()
+                and (
+                    str(document.get("semantic_type") or "").strip().casefold()
+                    == "adas_map_report"
+                    or str(document.get("document_type") or "").strip().casefold()
+                    == "adas_map_report"
+                )
+            ]
+            return compatible[0] if len(compatible) == 1 else None
+
+        document = matching_document(snapshot)
+        if document is None:
+            digest = hashlib.sha256(report.read_bytes()).hexdigest()
+            arguments = {
+                "source_path": str(report.resolve()),
+                "destination_path": f"supporting-documents/{source_name}",
+                "document_type": "adas_map_report",
+                "semantic_type": "ADAS_MAP_REPORT",
+                "title": f"{ro_number} ADAS Map",
+                "status": "validated",
+                "source_uri": source_uri,
+                "source_name": source_name,
+                "citation": f"ADAS Map coverage report for RO {ro_number}.",
+                "notes": (
+                    f"Captured by ScrapeX"
+                    f"{f' from inspection {inspection_id}' if inspection_id else ''}."
+                ),
+                "evidence_role": "JUSTIFICATION",
+            }
+            identity = {
+                "reconciliation_contract_version": RECONCILIATION_CONTRACT_VERSION,
+                "operation": "import_document",
+                "repair_order_id": repair_order_id,
+                "source_uri": source_uri,
+                "sha256": digest,
+            }
+            response = await self._post_actions([
+                {
+                    "idempotency_key": self._idempotency(identity),
+                    "correlation_id": correlation,
+                    "operation": "import_document",
+                    "repair_order_id": repair_order_id,
+                    "arguments": arguments,
+                }
+            ])
+            receipts.extend(list(response.get("receipts") or []))
+            snapshot = await self._snapshot(repair_order_id)
+            document = matching_document(snapshot)
+            if document is None:
+                raise CIQReconciliationError(
+                    "Calibration IQ did not verify the attached ADAS Map document.",
+                    result={"receipts": receipts},
+                )
+
+        attachment = {
+            "attached": True,
+            "document_id": str(
+                document.get("id") or document.get("document_id") or ""
+            ).strip()
+            or None,
+            "source_uri": source_uri,
+            "source_name": source_name,
+            "status": str(document.get("status") or "").strip().casefold() or None,
+            "semantic_type": (
+                str(document.get("semantic_type") or "").strip() or None
+            ),
+        }
+
+        research = snapshot.get("research")
+        if not isinstance(research, dict):
+            raise CIQReconciliationError(
+                "Calibration IQ did not provide an authoritative research case "
+                "after the ADAS Map attachment.",
+                result={"adas_map_attachment": attachment, "receipts": receipts},
+            )
+        research_state = str(research.get("state") or "").strip().casefold()
+        try:
+            research_version = int(research.get("version"))
+        except (TypeError, ValueError):
+            research_version = 0
+        if (
+            research_state not in RESEARCH_STATES
+            or research_version < 1
+        ):
+            raise CIQReconciliationError(
+                "Calibration IQ research state is not authoritative after ADAS Map attachment.",
+                result={"adas_map_attachment": attachment, "receipts": receipts},
+            )
+
+        research_started: dict[str, Any] | None = None
+        if research_state == "research_required":
+            arguments = {
+                "state": "research_in_progress",
+                "reason": (
+                    "ADAS Map acquired and attached; OEM service-information "
+                    "research is now in progress."
+                ),
+            }
+            identity = {
+                "reconciliation_contract_version": RECONCILIATION_CONTRACT_VERSION,
+                "operation": "update_research",
+                "repair_order_id": repair_order_id,
+                "expected_version": research_version,
+                "arguments": arguments,
+                "inspection_id": inspection_id,
+            }
+            response = await self._post_actions([
+                {
+                    "idempotency_key": self._idempotency(identity),
+                    "correlation_id": correlation,
+                    "operation": "update_research",
+                    "repair_order_id": repair_order_id,
+                    "expected_version": research_version,
+                    "arguments": arguments,
+                }
+            ])
+            start_receipts = list(response.get("receipts") or [])
+            receipts.extend(start_receipts)
+            snapshot = await self._snapshot(repair_order_id)
+            final_research = snapshot.get("research")
+            final_state = (
+                str(final_research.get("state") or "").strip().casefold()
+                if isinstance(final_research, dict)
+                else ""
+            )
+            try:
+                final_version = int(
+                    final_research.get("version")
+                    if isinstance(final_research, dict)
+                    else 0
+                )
+            except (TypeError, ValueError):
+                final_version = 0
+            if final_state != "research_in_progress" or final_version <= research_version:
+                raise CIQReconciliationError(
+                    "Calibration IQ did not verify research-in-progress after "
+                    "the ADAS Map attachment.",
+                    result={
+                        "adas_map_attachment": attachment,
+                        "receipts": receipts,
+                    },
+                )
+            start_receipt = start_receipts[0] if start_receipts else {}
+            research_started = {
+                "from_state": "research_required",
+                "to_state": "research_in_progress",
+                "from_version": research_version,
+                "to_version": final_version,
+                "mutation_id": start_receipt.get("mutation_id"),
+                "idempotency_key": start_receipt.get("idempotency_key"),
+                "replayed": bool(start_receipt.get("replayed")),
+            }
+
+        return snapshot, attachment, research_started, receipts
+
     async def reconcile_requirements(
         self,
         *,
@@ -584,6 +831,9 @@ class CIQClient:
         inspection_id: str | None,
         vehicle: dict[str, Any] | None = None,
         explicit_no_calibration: bool = False,
+        adas_map_path: str | None = None,
+        adas_map_ro_number: str | None = None,
+        adas_map_source_url: str | None = None,
     ) -> dict[str, Any]:
         """Keep/add/reactivate CIQ rows from ADAS Map and verify receipts.
 
@@ -632,6 +882,22 @@ class CIQClient:
             )
 
         before = await self._snapshot(repair_order_id)
+        adas_map_attachment: dict[str, Any] | None = None
+        research_started: dict[str, Any] | None = None
+        adas_map_receipts: list[dict[str, Any]] = []
+        if adas_map_path:
+            before, adas_map_attachment, research_started, adas_map_receipts = (
+                await self._prepare_adas_map_evidence(
+                    snapshot=before,
+                    repair_order_id=repair_order_id,
+                    adas_map_path=adas_map_path,
+                    ro_number=str(adas_map_ro_number or "").strip(),
+                    batch_id=batch_id,
+                    item_id=item_id,
+                    inspection_id=inspection_id,
+                    source_url=adas_map_source_url,
+                )
+            )
         existing = self._calibrations(before)
         if explicit_no_calibration:
             active_conflicts = [
@@ -1032,8 +1298,12 @@ class CIQClient:
             "changed": changed,
             "vehicle_changed": vehicle_receipt,
             "research_reopened": research_reopened,
+            "research_started": research_started,
+            "adas_map_attachment": adas_map_attachment,
             "active_calibration_item_ids": active_ids,
-            "receipt_count": len(reopen_receipts) + len(receipts),
+            "receipt_count": (
+                len(adas_map_receipts) + len(reopen_receipts) + len(receipts)
+            ),
             "snapshot_verified": True,
             "explicit_no_calibration": explicit_no_calibration,
         }
