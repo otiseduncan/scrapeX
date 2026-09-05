@@ -440,6 +440,7 @@ class Store:
             and row["adas_map_state"] == "adas_map_complete"
             and bool(row["adas_map_requirements_proven"])
             and row["ciq_reconciliation_state"] == "complete"
+            and row["ciq_adas_map_verified"] == 1
             for row in rows
         )
 
@@ -491,6 +492,7 @@ class Store:
                 and row["adas_map_state"] == "adas_map_complete"
                 and bool(row["adas_map_requirements_proven"])
                 and row["ciq_reconciliation_state"] == "complete"
+                and row["ciq_adas_map_verified"] == 1
                 for row in rows
             ),
             "manual_future": sum(
@@ -498,6 +500,7 @@ class Store:
                 and row["adas_map_state"] == "adas_map_complete"
                 and bool(row["adas_map_requirements_proven"])
                 and row["ciq_reconciliation_state"] == "complete"
+                and row["ciq_adas_map_verified"] == 1
                 for row in rows
             ),
             "needs_operator": sum(
