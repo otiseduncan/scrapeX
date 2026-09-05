@@ -9,7 +9,7 @@ from .storage_policy import rewrite_nested_adas_map_paths
 
 
 ADAS_MAP_COMPLETE_STATES = {"adas_map_complete"}
-ADAS_MAP_CONTRACT_VERSION = 2
+ADAS_MAP_CONTRACT_VERSION = 3
 ADAS_MAP_ATTENTION_STATES = {
     "ro_not_found",
     "ambiguous_ro",
