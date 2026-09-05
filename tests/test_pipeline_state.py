@@ -74,6 +74,7 @@ def test_pre_attachment_contract_completion_is_not_current_readiness(tmp_path: P
     selected = store.next_adas_map_item(bid)
     assert selected["id"] == item["id"]
 
+
 def test_map_readiness_requires_proof_and_verified_ciq_reconciliation(tmp_path: Path):
     store = Store(tmp_path / "db.sqlite")
     bid = _batch(store)
@@ -150,6 +151,7 @@ def test_pipeline_summary_never_hides_map_attention(tmp_path: Path):
         adas_map_state="adas_map_complete", adas_map_contract_version=ADAS_MAP_CONTRACT_VERSION,
         adas_map_requirements_proven=1,
         ciq_reconciliation_state="complete",
+        ciq_adas_map_verified=1,
     )
     store.set_item(
         second["id"], "pending",
