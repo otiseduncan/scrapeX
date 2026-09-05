@@ -75,6 +75,7 @@ class Store:
             "adas_map_last_error": "TEXT",
             "adas_map_checked_at": "TEXT",
             "ciq_reconciliation_state": "TEXT NOT NULL DEFAULT 'pending'",
+            "ciq_adas_map_verified": "INTEGER NOT NULL DEFAULT 0",
             "ciq_reconciliation_json": "TEXT",
             "ciq_reconciliation_error": "TEXT",
             "ciq_reconciled_at": "TEXT",
@@ -250,6 +251,7 @@ class Store:
                 and i.get("adas_map_state") == "adas_map_complete"
                 and bool(i.get("adas_map_requirements_proven"))
                 and i.get("ciq_reconciliation_state") == "complete"
+                and i.get("ciq_adas_map_verified") in (1, True)
                 for i in out["items"]
             ),
             "needs_operator": sum(
@@ -285,6 +287,10 @@ class Store:
                   AND (
                     COALESCE(adas_map_contract_version,0) < ?
                     OR COALESCE(adas_map_state,'pending') NOT IN ({marks})
+                    OR (
+                        COALESCE(adas_map_state,'pending')='adas_map_complete'
+                        AND COALESCE(ciq_adas_map_verified,0)<>1
+                    )
                   )
                   AND (
                     COALESCE(adas_map_contract_version,0) < ?
@@ -321,7 +327,7 @@ class Store:
             "adas_map_report_links_json","adas_map_raw_result_json",
             "adas_map_requirements_proven","adas_map_last_error",
             "adas_map_checked_at","ciq_reconciliation_state",
-            "ciq_reconciliation_json","ciq_reconciliation_error",
+            "ciq_adas_map_verified","ciq_reconciliation_json","ciq_reconciliation_error",
             "ciq_reconciled_at",
         }
         fields={k:v for k,v in fields.items() if k in allowed}
@@ -349,11 +355,24 @@ class Store:
     def save_reconciliation(
         self, item_id: str, state: str, result: dict[str, Any] | None, error: str | None = None
     ) -> None:
+        payload = result if isinstance(result, dict) else {}
+        attachment = payload.get("adas_map_attachment")
+        attachment_verified = bool(
+            state == "complete"
+            and payload.get("verified") is True
+            and payload.get("snapshot_verified") is True
+            and isinstance(attachment, dict)
+            and attachment.get("attached") is True
+            and str(attachment.get("semantic_type") or "").strip().casefold()
+            == "adas_map_report"
+            and str(attachment.get("document_id") or "").strip()
+        )
         self.set_item(
             item_id,
             self.item_state(item_id),
             ciq_reconciliation_state=state,
-            ciq_reconciliation_json=json.dumps(result or {}, sort_keys=True),
+            ciq_adas_map_verified=int(attachment_verified),
+            ciq_reconciliation_json=json.dumps(payload, sort_keys=True),
             ciq_reconciliation_error=error,
             ciq_reconciled_at=now(),
         )
@@ -379,6 +398,7 @@ class Store:
                     adas_map_vin,
                     adas_map_requirements_proven,
                     ciq_reconciliation_state,
+                    ciq_adas_map_verified,
                     adas_map_last_error
                 FROM items
                 WHERE batch_id=?
@@ -412,6 +432,7 @@ class Store:
         ciq_reconciled = sum(
             row["adas_map_contract_version"] == ADAS_MAP_CONTRACT_VERSION
             and row["ciq_reconciliation_state"] == "complete"
+            and row["ciq_adas_map_verified"] == 1
             for row in rows
         )
         ready = sum(
@@ -440,7 +461,8 @@ class Store:
                 """
                 SELECT adas_map_state,adas_map_contract_version,
                        adas_map_requirements_proven,
-                       ciq_reconciliation_state
+                       ciq_reconciliation_state,
+                       ciq_adas_map_verified
                 FROM items WHERE batch_id=? ORDER BY ordinal
                 """,
                 (bid,),
@@ -461,6 +483,7 @@ class Store:
             "ciq_reconciled": sum(
                 row["adas_map_contract_version"] == ADAS_MAP_CONTRACT_VERSION
                 and row["ciq_reconciliation_state"] == "complete"
+                and row["ciq_adas_map_verified"] == 1
                 for row in rows
             ),
             "ready": sum(
