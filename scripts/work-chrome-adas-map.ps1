@@ -1367,6 +1367,37 @@ function Point-Hits-Element {
     foreach ($ancestor in @(Ancestor-Chain -Element $hit -Limit 12)) {
         if ($ancestor.key -eq $targetKey) { return $true }
     }
+
+    # Chrome's PDF viewer and other plugin-hosted controls resolve a hit test
+    # to the container that hosts the button rather than the button itself.
+    # If the point lands on something the target sits inside, nothing is
+    # covering the target, so the click reaches it.
+    $hitKey = Element-Key -Element $hit
+    if ($hitKey) {
+        foreach ($ancestor in @(Ancestor-Chain -Element $Element -Limit 12)) {
+            if ($ancestor.key -eq $hitKey) { return $true }
+        }
+    }
+
+    # Stacked modals expose two separate elements for the same visual control
+    # at identical geometry -- the report modal's dismiss icon sits exactly on
+    # the inspection modal's. Hit-testing returns whichever is topmost, so
+    # demanding runtime-id identity refuses a click that would land precisely
+    # on an equivalent control. Same class and same rectangle is that control.
+    try {
+        $targetRect = $Element.Current.BoundingRectangle
+        $hitRect = $hit.Current.BoundingRectangle
+        if (
+            [string]$hit.Current.ClassName -eq [string]$Element.Current.ClassName -and
+            [Math]::Abs($hitRect.Left - $targetRect.Left) -le 2 -and
+            [Math]::Abs($hitRect.Top - $targetRect.Top) -le 2 -and
+            [Math]::Abs($hitRect.Width - $targetRect.Width) -le 2 -and
+            [Math]::Abs($hitRect.Height - $targetRect.Height) -le 2
+        ) {
+            return $true
+        }
+    }
+    catch {}
     return $false
 }
 
@@ -5092,6 +5123,9 @@ function Invoke-Download-Report {
 
             $reportOpened = Invoke-LegacyDefaultAction -Element $reportButton
             if (-not $reportOpened) {
+                $reportOpened = Invoke-InvokePatternOnly -Element $reportButton
+            }
+            if (-not $reportOpened) {
                 $reportOpened = Click-ElementCenter -Element $reportButton
             }
 
@@ -5108,7 +5142,14 @@ function Invoke-Download-Report {
             }
         }
 
+        # Chrome's PDF viewer toolbar is composited outside the page, so hit
+        # testing at the button's own coordinates resolves to the web content
+        # underneath and a physical click is refused. The button does expose
+        # InvokePattern, which activates it directly and raises Save As.
         $downloadClicked = Invoke-LegacyDefaultAction -Element $downloadButton
+        if (-not $downloadClicked) {
+            $downloadClicked = Invoke-InvokePatternOnly -Element $downloadButton
+        }
         if (-not $downloadClicked) {
             $downloadClicked = Click-ElementCenter -Element $downloadButton
         }
