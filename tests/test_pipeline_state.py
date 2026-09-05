@@ -68,7 +68,7 @@ def test_pre_attachment_contract_completion_is_not_current_readiness(tmp_path: P
         ciq_reconciliation_state="complete",
     )
 
-    assert ADAS_MAP_CONTRACT_VERSION == 2
+    assert ADAS_MAP_CONTRACT_VERSION == 3
     assert store.batch(bid)["summary"]["complete"] == 0
     assert store.list_batches()[0]["complete_count"] == 0
     selected = store.next_adas_map_item(bid)
@@ -88,7 +88,19 @@ def test_map_readiness_requires_proof_and_verified_ciq_reconciliation(tmp_path: 
     )
     assert store.pipeline_summary(bid)["ready"] == 0
 
-    store.save_reconciliation(item["id"], "complete", {"verified": True})
+    store.save_reconciliation(
+        item["id"],
+        "complete",
+        {
+            "verified": True,
+            "snapshot_verified": True,
+            "adas_map_attachment": {
+                "attached": True,
+                "document_id": "doc-1",
+                "semantic_type": "ADAS_MAP_REPORT",
+            },
+        },
+    )
     assert store.pipeline_summary(bid)["ready"] == 1
 
 
