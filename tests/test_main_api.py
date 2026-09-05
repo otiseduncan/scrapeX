@@ -81,6 +81,18 @@ class FakeAdasRunner:
             adas_map_requirements_json=json.dumps(requirements),
             requirements_json=json.dumps(["Occupant Classification System"]),
             ciq_reconciliation_state="complete",
+            ciq_adas_map_verified=1,
+            ciq_reconciliation_json=json.dumps(
+                {
+                    "verified": True,
+                    "snapshot_verified": True,
+                    "adas_map_attachment": {
+                        "attached": True,
+                        "document_id": "doc-adas-map",
+                        "semantic_type": "ADAS_MAP_REPORT",
+                    },
+                }
+            ),
             final_state="pending",
         )
 
@@ -137,6 +149,18 @@ def mark_adas_complete(services: AppServices, batch_id: str, ro_number: str) -> 
         adas_map_requirements_proven=1,
         adas_map_vin="TESTCAR0000000001",
         ciq_reconciliation_state="complete",
+        ciq_adas_map_verified=1,
+        ciq_reconciliation_json=json.dumps(
+                {
+                    "verified": True,
+                    "snapshot_verified": True,
+                    "adas_map_attachment": {
+                        "attached": True,
+                        "document_id": "doc-adas-map",
+                        "semantic_type": "ADAS_MAP_REPORT",
+                    },
+                }
+            ),
         requirements_json=json.dumps(["Occupant Classification System"]),
         final_state="pending",
     )
