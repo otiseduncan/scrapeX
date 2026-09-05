@@ -252,6 +252,27 @@ class AdasMapBatchRunner:
             )
             return
 
+        local_report_path = str(result.get("local_report_path") or "").strip()
+        if (
+            result.get("report_capture_verified") is not True
+            or not local_report_path
+        ):
+            self.store.checkpoint_adas_map(
+                item_id,
+                "needs_operator",
+                adas_map_attempts=attempts,
+                adas_map_url=result.get("details_url") or result.get("url"),
+                adas_map_source_url=result.get("source_url"),
+                adas_map_inspection_id=result.get("inspection_id"),
+                adas_map_last_error=(
+                    result.get("report_error")
+                    or "ADAS Map completion requires a verified canonical PDF path."
+                ),
+                adas_map_raw_result_json=json.dumps(result, sort_keys=True, default=str),
+                adas_map_checked_at=checked_at,
+            )
+            return
+
         returned_ro = str(result.get("ro_number") or ro_number).strip()
         returned_ciq_id = str(result.get("ciq_ro_id") or "").strip()
         expected_ciq_id = str(item.get("ro_id") or "").strip()
@@ -407,9 +428,7 @@ class AdasMapBatchRunner:
                 inspection_id=inspection_id,
                 vehicle=observed_vehicle,
                 explicit_no_calibration=explicit_none,
-                adas_map_path=(
-                    str(result.get("local_report_path") or "").strip() or None
-                ),
+                adas_map_path=local_report_path,
                 adas_map_ro_number=ro_number,
                 adas_map_source_url=source_url,
             )
