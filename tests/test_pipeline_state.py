@@ -55,6 +55,25 @@ def test_legacy_map_complete_is_invalidated(tmp_path: Path):
     assert exhausted_legacy["id"] == item["id"]
 
 
+def test_pre_attachment_contract_completion_is_not_current_readiness(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite")
+    bid = _batch(store)
+    item = store.batch(bid)["items"][0]
+    store.set_item(
+        item["id"],
+        "pending",
+        adas_map_state="adas_map_complete",
+        adas_map_contract_version=1,
+        adas_map_requirements_proven=1,
+        ciq_reconciliation_state="complete",
+    )
+
+    assert ADAS_MAP_CONTRACT_VERSION == 2
+    assert store.batch(bid)["summary"]["complete"] == 0
+    assert store.list_batches()[0]["complete_count"] == 0
+    selected = store.next_adas_map_item(bid)
+    assert selected["id"] == item["id"]
+
 def test_map_readiness_requires_proof_and_verified_ciq_reconciliation(tmp_path: Path):
     store = Store(tmp_path / "db.sqlite")
     bid = _batch(store)
