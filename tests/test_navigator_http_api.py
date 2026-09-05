@@ -75,6 +75,9 @@ class FakePage:
     async def screenshot(self, type="png"):
         return b"\x89PNG\r\n\x1a\nfake"
 
+    async def pdf(self, **kwargs):
+        return b"%PDF-1.7\n" + (b"x" * 1200)
+
     async def wait_for_timeout(self, ms):
         pass
 
@@ -313,3 +316,19 @@ def test_remote_input_click_and_type(tmp_path: Path):
     fake_page = page.pages["alldata"]
     assert fake_page.clicks == [(12, 34)]
     assert fake_page.typed == ["hello"]
+
+
+def test_capture_requires_verified_task(tmp_path: Path):
+    services = make_services(tmp_path)
+    with TestClient(create_app(services)) as client:
+        task_id = client.post(
+            "/api/navigator/tasks",
+            json={
+                "provider": "alldata",
+                "target": {"year": 2023, "make": "Toyota", "model": "Camry"},
+                "topic": "blind spot calibration",
+            },
+        ).json()["task_id"]
+        client.post(f"/api/navigator/tasks/{task_id}/observe")
+        response = client.post(f"/api/navigator/tasks/{task_id}/capture")
+    assert response.status_code == 409

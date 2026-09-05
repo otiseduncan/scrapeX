@@ -7,6 +7,8 @@ from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any
 
+from .storage_policy import adas_map_pdf_path
+
 
 def _compact_text(value: Any) -> str:
     return " ".join(str(value or "").split())
@@ -671,7 +673,10 @@ class WorkChromeAdasMapSource:
         report_error: str | None = None
 
         if self.adas_si_root is not None:
-            save_path = self.adas_si_root / f"{ro_number} adas map.pdf"
+            # Hard storage rule: ADAS Map evidence is organized by RO, never
+            # mixed into the Year/Make/Model SI hierarchy.
+            save_path = adas_map_pdf_path(self.adas_si_root, ro_number)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
             download_result = await self.bridge.download_report(
                 ro_number,
                 str(save_path),

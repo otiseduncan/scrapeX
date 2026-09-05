@@ -5,6 +5,7 @@ from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any
 from .models import BatchCreate
+from .storage_policy import rewrite_nested_adas_map_paths
 
 
 ADAS_MAP_COMPLETE_STATES = {"adas_map_complete"}
@@ -694,3 +695,61 @@ class Store:
                     int(verified), int(verified), now(), task_id,
                 ),
             )
+
+
+    def normalize_adas_map_storage_paths(self, adas_si_root: Path) -> int:
+        """Rewrite persisted local ADAS Map paths to ADAS Map/<RO>/.
+
+        This runs independently of the filesystem migration so a prior X Omni
+        startup may already have moved the physical file before ScrapeX starts.
+        Source HTTP URLs are untouched.
+        """
+        root = Path(adas_si_root).resolve()
+        changed = 0
+        with self.conn() as db:
+            rows = db.execute(
+                "SELECT id,adas_map_report_links_json,adas_map_raw_result_json FROM items"
+            ).fetchall()
+            for row in rows:
+                updates: dict[str, str] = {}
+                for column in ("adas_map_report_links_json", "adas_map_raw_result_json"):
+                    raw = row[column]
+                    if raw is None:
+                        continue
+                    try:
+                        parsed = json.loads(raw)
+                    except (TypeError, ValueError):
+                        continue
+                    normalized = rewrite_nested_adas_map_paths(parsed, root)
+                    if normalized != parsed:
+                        updates[column] = json.dumps(
+                            normalized, sort_keys=True, default=str
+                        )
+                if updates:
+                    assignments = ",".join(f"{key}=?" for key in updates)
+                    db.execute(
+                        f"UPDATE items SET {assignments},updated_at=? WHERE id=?",
+                        [*updates.values(), now(), row["id"]],
+                    )
+                    changed += 1
+
+            docs = db.execute(
+                "SELECT id,relative_path FROM documents WHERE relative_path IS NOT NULL"
+            ).fetchall()
+            for row in docs:
+                old = str(row["relative_path"] or "")
+                normalized = rewrite_nested_adas_map_paths(old, root)
+                if normalized == old:
+                    continue
+                try:
+                    rel = str(
+                        Path(normalized).resolve().relative_to(root)
+                    ).replace("\\", "/")
+                except (ValueError, OSError):
+                    rel = normalized
+                db.execute(
+                    "UPDATE documents SET relative_path=? WHERE id=?",
+                    (rel, row["id"]),
+                )
+                changed += 1
+        return changed

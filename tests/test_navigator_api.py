@@ -63,7 +63,12 @@ async def runner(navigator_fixture_server, tmp_path: Path):
     store = Store(tmp_path / "db.sqlite")
     browser_manager = NavigatorBrowserManager(tmp_path / "data", headless=True)
     provider = FixtureProvider(navigator_fixture_server + "/index.html")
-    task_runner = NavigatorTaskRunner(store, browser_manager, provider)
+    task_runner = NavigatorTaskRunner(
+        store,
+        browser_manager,
+        provider,
+        adas_si_root=tmp_path / "ADAS SI",
+    )
     yield task_runner
     await browser_manager.close()
 
@@ -124,6 +129,10 @@ async def test_full_navigation_reaches_and_verifies_correct_leaf(runner: Navigat
     evidence = runner.evidence(task_id)
     assert evidence["verified"] is True
     assert "leaf-correct" in (evidence["source_url"] or "") or "leaf-frame" in (evidence["source_url"] or "")
+
+    capture = await runner.capture(task_id)
+    assert capture["saved"] is True
+    assert capture["relative_path"].startswith("2023/Toyota/Camry/")
 
 
 @pytest.mark.asyncio

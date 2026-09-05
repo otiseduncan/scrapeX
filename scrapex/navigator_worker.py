@@ -10,7 +10,11 @@ states independent of whatever turn budget the caller enforces on itself.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Optional
 
 from .navigator_actions import ActionError, NavigatorActionExecutor
@@ -23,6 +27,7 @@ from .navigator_observation import (
 )
 from .navigator_providers import NavigatorProvider
 from .navigator_verification import evaluate_navigation_claim
+from .storage_policy import safe_component, service_information_directory
 
 TERMINAL_STATES = frozenset({"verified", "exhausted", "failed"})
 DEFAULT_ACTION_BUDGET = 50
@@ -78,10 +83,20 @@ def public_observation(observation: Observation, *, loop_warning=None, backtrack
 
 
 class NavigatorTaskRunner:
-    def __init__(self, store: Any, browser_manager: Any, provider: NavigatorProvider):
+    def __init__(
+        self,
+        store: Any,
+        browser_manager: Any,
+        provider: NavigatorProvider,
+        *,
+        adas_si_root: Path | None = None,
+    ):
         self.store = store
         self.browser_manager = browser_manager
         self.provider = provider
+        self.adas_si_root = (
+            Path(adas_si_root).resolve() if adas_si_root is not None else None
+        )
         self.executor = NavigatorActionExecutor(provider)
 
     def _require_task(self, task_id: str) -> dict[str, Any]:
@@ -197,6 +212,155 @@ class NavigatorTaskRunner:
         )
         self.store.save_navigator_verification(task_id, proof)
         return proof
+
+    async def capture(self, task_id: str) -> dict[str, Any]:
+        """Persist the verified leaf from this exact Navigator browser session.
+
+        Service-information storage is always Year/Make/Model. A capture can
+        only occur after the canonical verification proof succeeded, and the
+        live page URL must still equal the verified source URL.
+        """
+        task = self._require_task(task_id)
+        proof = (
+            task.get("verification")
+            if isinstance(task.get("verification"), dict)
+            else {}
+        )
+        if not task.get("verified") or proof.get("verified") is not True:
+            raise NavigatorTaskError(
+                "evidence_not_verified",
+                "Navigator evidence must verify before it can be preserved in ADAS SI.",
+            )
+        if self.adas_si_root is None:
+            raise NavigatorTaskError(
+                "adas_si_unavailable",
+                "ADAS SI storage is not configured for this Navigator.",
+            )
+        target = task.get("target") if isinstance(task.get("target"), dict) else {}
+        try:
+            folder = service_information_directory(self.adas_si_root, target)
+        except ValueError as exc:
+            raise NavigatorTaskError("invalid_target", str(exc)) from exc
+
+        observation = (
+            task.get("last_observation")
+            if isinstance(task.get("last_observation"), dict)
+            else {}
+        )
+        source_url = str(observation.get("url") or "").strip()
+        verified_url = str(proof.get("source_url") or "").strip()
+        if not source_url or source_url != verified_url:
+            raise NavigatorTaskError(
+                "verified_page_changed",
+                "The live Navigator page no longer matches the verified evidence source.",
+            )
+
+        folder.mkdir(parents=True, exist_ok=True)
+        for sidecar in folder.glob("*.source.json"):
+            try:
+                existing = json.loads(sidecar.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+            if str(existing.get("source_url") or "").strip() == source_url:
+                pdf_name = sidecar.name.removesuffix(".source.json") + ".pdf"
+                pdf_path = sidecar.with_name(pdf_name)
+                if pdf_path.is_file():
+                    return {
+                        "status": "success",
+                        "saved": False,
+                        "already_present": True,
+                        "task_id": task_id,
+                        "provider": task["provider"],
+                        "relative_path": str(
+                            pdf_path.relative_to(self.adas_si_root)
+                        ).replace("\\", "/"),
+                        "source_sidecar": str(
+                            sidecar.relative_to(self.adas_si_root)
+                        ).replace("\\", "/"),
+                        "source_url": source_url,
+                        "storage_policy": "year/make/model",
+                    }
+
+        page = await self._page()
+        if str(page.url or "").strip() != source_url:
+            raise NavigatorTaskError(
+                "verified_page_changed",
+                "The provider browser changed after verification; capture was refused.",
+            )
+        try:
+            pdf_bytes = await page.pdf(
+                format="Letter",
+                print_background=True,
+                prefer_css_page_size=True,
+            )
+        except Exception as exc:
+            raise NavigatorTaskError(
+                "capture_failed",
+                f"Provider page could not be rendered as PDF: {type(exc).__name__}.",
+            ) from exc
+        if not pdf_bytes.startswith(b"%PDF") or len(pdf_bytes) < 1000:
+            raise NavigatorTaskError(
+                "capture_failed",
+                "Provider returned an invalid or empty PDF capture.",
+            )
+
+        digest = hashlib.sha256(pdf_bytes).hexdigest()
+        topic = safe_component(task.get("topic"), "Service Information", maximum=120)
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        base = safe_component(
+            f"{topic} {self.provider.slug.upper()} {stamp}",
+            f"Service Information {stamp}",
+            maximum=150,
+        )
+        pdf_path = folder / f"{base}.pdf"
+        sidecar = folder / f"{base}.source.json"
+        index = 2
+        while pdf_path.exists() or sidecar.exists():
+            pdf_path = folder / f"{base} ({index}).pdf"
+            sidecar = folder / f"{base} ({index}).source.json"
+            index += 1
+
+        pdf_path.write_bytes(pdf_bytes)
+        provenance = {
+            "provider": self.provider.slug,
+            "artifact_kind": "service_information",
+            "storage_policy": "year/make/model",
+            "task_id": task_id,
+            "source_url": source_url,
+            "title": observation.get("title"),
+            "topic": task.get("topic"),
+            "vehicle": target,
+            "retrieved_at": datetime.now(UTC).replace(microsecond=0).isoformat(),
+            "saved_pdf_sha256": digest,
+            "verification": proof,
+            "licensed_access": True,
+            "credential_secret_stored_in_document": False,
+        }
+        sidecar.write_text(
+            json.dumps(
+                provenance,
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "status": "success",
+            "saved": True,
+            "already_present": False,
+            "task_id": task_id,
+            "provider": task["provider"],
+            "relative_path": str(
+                pdf_path.relative_to(self.adas_si_root)
+            ).replace("\\", "/"),
+            "source_sidecar": str(
+                sidecar.relative_to(self.adas_si_root)
+            ).replace("\\", "/"),
+            "source_url": source_url,
+            "sha256": digest,
+            "storage_policy": "year/make/model",
+        }
 
     def evidence(self, task_id: str) -> dict[str, Any]:
         task = self._require_task(task_id)

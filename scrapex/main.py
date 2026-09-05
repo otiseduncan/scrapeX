@@ -19,6 +19,7 @@ from .db import ADAS_MAP_ATTENTION_STATES, ADAS_MAP_CONTRACT_VERSION, Store
 from .models import BatchCreate, CIQBatchCreate, CIQPreviewRequest
 from .navigator_browser import NavigatorBrowserManager
 from .navigator_worker import NavigatorTaskError, NavigatorTaskRunner
+from .storage_policy import migrate_legacy_adas_map_reports
 from .work_chrome import WorkChromeAdasMapSource, WorkChromeBridge
 
 
@@ -111,6 +112,12 @@ async def lifespan(app: FastAPI):
         services = build_default_services()
         app.state.services = services
     services.store.recover_after_restart()
+    adas_root = getattr(services.settings, "adas_si_root", None)
+    if adas_root is not None:
+        # Reorganize the existing physical ADAS Map database and rewrite any
+        # persisted ScrapeX path metadata before serving new work.
+        migrate_legacy_adas_map_reports(adas_root)
+        services.store.normalize_adas_map_storage_paths(adas_root)
     yield
 
 
@@ -264,7 +271,12 @@ def _navigator_provider_or_404(services: AppServices, provider_slug: str) -> Any
 
 def _navigator_runner(services: AppServices, provider_slug: str) -> NavigatorTaskRunner:
     provider = _navigator_provider_or_404(services, provider_slug)
-    return NavigatorTaskRunner(services.store, services.navigator_manager, provider)
+    return NavigatorTaskRunner(
+        services.store,
+        services.navigator_manager,
+        provider,
+        adas_si_root=getattr(services.settings, "adas_si_root", None),
+    )
 
 
 def _navigator_runner_for_task(services: AppServices, task_id: str) -> tuple[NavigatorTaskRunner, dict[str, Any]]:
@@ -432,6 +444,14 @@ async def navigator_task_evidence(request: Request, task_id: str) -> dict[str, A
     services = _services(request)
     runner, _ = _navigator_runner_for_task(services, task_id)
     return runner.evidence(task_id)
+
+
+@router.post("/api/navigator/tasks/{task_id}/capture")
+async def navigator_task_capture(request: Request, task_id: str) -> dict[str, Any]:
+    """Preserve the verified leaf from this exact Navigator browser session."""
+    services = _services(request)
+    runner, _ = _navigator_runner_for_task(services, task_id)
+    return await _navigator_call(lambda: runner.capture(task_id))
 
 
 @router.get("/api/navigator/tasks/{task_id}/screenshot")
