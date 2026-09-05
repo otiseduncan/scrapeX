@@ -1,6 +1,6 @@
 
 from pathlib import Path
-from scrapex.db import Store
+from scrapex.db import ADAS_MAP_CONTRACT_VERSION, Store
 from scrapex.models import BatchCreate, VehicleSpec
 
 def test_store_has_adas_map_and_delete_methods(tmp_path: Path):
@@ -31,7 +31,7 @@ def test_adas_map_summary_counts_vin(tmp_path: Path):
         item["state"],
         vin="TESTCAR0000000002",
         adas_map_state="adas_map_complete",
-        adas_map_contract_version=1,
+        adas_map_contract_version=ADAS_MAP_CONTRACT_VERSION,
         adas_map_vin="TESTCAR0000000002",
         adas_map_requirements_proven=1,
     )
