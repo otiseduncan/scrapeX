@@ -4,7 +4,7 @@ import pytest
 
 import scrapex.adas_map_worker as adas_worker_module
 from scrapex.adas_map_worker import AdasMapBatchRunner
-from scrapex.db import Store
+from scrapex.db import ADAS_MAP_CONTRACT_VERSION, Store
 from scrapex.models import BatchCreate, VehicleSpec
 
 
@@ -128,7 +128,7 @@ async def test_success_persists_every_map_checkpoint_and_verified_ciq(tmp_path: 
     ]
     refreshed = store.batch(batch_id)["items"][0]
     assert refreshed["adas_map_state"] == "adas_map_complete"
-    assert refreshed["adas_map_contract_version"] == 1
+    assert refreshed["adas_map_contract_version"] == ADAS_MAP_CONTRACT_VERSION
     assert refreshed["adas_map_requirements_proven"] == 1
     assert refreshed["ciq_reconciliation_state"] == "complete"
     assert refreshed["configuration"] == "L FWD w/7-Passenger Seating"
@@ -217,7 +217,7 @@ async def test_stale_contract_resets_map_attempt_budget(tmp_path: Path):
     stale = store.next_adas_map_item(batch_id)
     await AdasMapBatchRunner(store, FakeSource(), FakeCIQ()).process_one(stale)
     refreshed = store.batch(batch_id)["items"][0]
-    assert refreshed["adas_map_contract_version"] == 1
+    assert refreshed["adas_map_contract_version"] == ADAS_MAP_CONTRACT_VERSION
     assert refreshed["adas_map_attempts"] == 1
     assert refreshed["adas_map_state"] == "adas_map_complete"
 
