@@ -572,8 +572,20 @@ class CIQClient:
                 and verified
             )
             if not valid:
+                # Carry Calibration IQ's own refusal into the operator-visible
+                # message. A generic "no verified receipt" tells the operator
+                # nothing about what to fix, and the real reason is otherwise
+                # buried inside the stored receipt payload.
+                detail = ""
+                if isinstance(receipt, dict) and isinstance(receipt.get("error"), dict):
+                    error = receipt["error"]
+                    code = str(error.get("code") or "").strip()
+                    message = " ".join(str(error.get("message") or "").split())
+                    detail = " ".join(part for part in (code, message) if part)
                 raise CIQReconciliationError(
-                    "Calibration IQ did not return a verified completed receipt for every action.",
+                    "Calibration IQ did not return a verified completed receipt "
+                    f"for {action['operation']}."
+                    + (f" {detail}" if detail else ""),
                     result=body,
                 )
         return body

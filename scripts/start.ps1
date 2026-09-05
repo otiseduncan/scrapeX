@@ -8,9 +8,15 @@ if (-not (Test-Path -LiteralPath $Python)) {
 }
 
 $env:SCRAPEX_ROOT = $Root
-$Revision = (& git -C $Root rev-parse HEAD 2>$null | Select-Object -First 1)
-if ($LASTEXITCODE -eq 0 -and $Revision) {
-    $env:SCRAPEX_RUNTIME_REVISION = ([string]$Revision).Trim()
+# Capture the exit code before any pipeline: an early-terminating pipeline
+# element such as `Select-Object -First 1` leaves $LASTEXITCODE unset, which
+# silently blanked the revision and made every caller treat this runtime as
+# stale source.
+$RevisionOutput = & git -C $Root rev-parse HEAD 2>$null
+$RevisionExitCode = $LASTEXITCODE
+$Revision = ([string]($RevisionOutput | Select-Object -First 1)).Trim()
+if ($RevisionExitCode -eq 0 -and $Revision -match '^[0-9a-fA-F]{40}$') {
+    $env:SCRAPEX_RUNTIME_REVISION = $Revision
 } else {
     $env:SCRAPEX_RUNTIME_REVISION = ""
 }
