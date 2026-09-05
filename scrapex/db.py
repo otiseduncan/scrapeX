@@ -9,7 +9,7 @@ from .storage_policy import rewrite_nested_adas_map_paths
 
 
 ADAS_MAP_COMPLETE_STATES = {"adas_map_complete"}
-ADAS_MAP_CONTRACT_VERSION = 1
+ADAS_MAP_CONTRACT_VERSION = 2
 ADAS_MAP_ATTENTION_STATES = {
     "ro_not_found",
     "ambiguous_ro",
@@ -209,24 +209,31 @@ class Store:
 
     def list_batches(self):
         with self.conn() as db:
-            rows = db.execute("""
-            SELECT b.*,COUNT(i.id) total,
-              SUM(CASE WHEN i.adas_map_contract_version=1
-                        AND i.adas_map_state='adas_map_complete'
-                        AND i.adas_map_requirements_proven=1
-                        AND i.ciq_reconciliation_state='complete'
-                       THEN 1 ELSE 0 END) complete_count,
-              SUM(CASE WHEN i.adas_map_contract_version=1
-                        AND i.adas_map_state IN
-                ('ro_not_found','ambiguous_ro','view_not_found','view_did_not_navigate',
-                 'vin_missing','requirements_unparsed','login_required','needs_operator','failed')
-                THEN 1 ELSE 0 END) needs_operator_count,
-              SUM(CASE WHEN i.adas_map_contract_version=1
-                        AND i.adas_map_state IN ('retryable_error','failed')
-                       THEN 1 ELSE 0 END) error_count
-            FROM batches b LEFT JOIN items i ON i.batch_id=b.id
-            GROUP BY b.id ORDER BY b.created_at DESC
-            """).fetchall()
+            rows = db.execute(
+                """
+                SELECT b.*,COUNT(i.id) total,
+                  SUM(CASE WHEN i.adas_map_contract_version=?
+                            AND i.adas_map_state='adas_map_complete'
+                            AND i.adas_map_requirements_proven=1
+                            AND i.ciq_reconciliation_state='complete'
+                           THEN 1 ELSE 0 END) complete_count,
+                  SUM(CASE WHEN i.adas_map_contract_version=?
+                            AND i.adas_map_state IN
+                    ('ro_not_found','ambiguous_ro','view_not_found','view_did_not_navigate',
+                     'vin_missing','requirements_unparsed','login_required','needs_operator','failed')
+                    THEN 1 ELSE 0 END) needs_operator_count,
+                  SUM(CASE WHEN i.adas_map_contract_version=?
+                            AND i.adas_map_state IN ('retryable_error','failed')
+                           THEN 1 ELSE 0 END) error_count
+                FROM batches b LEFT JOIN items i ON i.batch_id=b.id
+                GROUP BY b.id ORDER BY b.created_at DESC
+                """,
+                (
+                    ADAS_MAP_CONTRACT_VERSION,
+                    ADAS_MAP_CONTRACT_VERSION,
+                    ADAS_MAP_CONTRACT_VERSION,
+                ),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def batch(self, bid: str):
