@@ -154,6 +154,7 @@ def _item_is_adas_complete(item: dict[str, Any]) -> bool:
         and item.get("adas_map_state") == "adas_map_complete"
         and bool(item.get("adas_map_requirements_proven"))
         and item.get("ciq_reconciliation_state") == "complete"
+        and item.get("ciq_adas_map_verified") in (1, True)
     )
 
 
