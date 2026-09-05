@@ -8,6 +8,12 @@ if (-not (Test-Path -LiteralPath $Python)) {
 }
 
 $env:SCRAPEX_ROOT = $Root
+$Revision = (& git -C $Root rev-parse HEAD 2>$null | Select-Object -First 1)
+if ($LASTEXITCODE -eq 0 -and $Revision) {
+    $env:SCRAPEX_RUNTIME_REVISION = ([string]$Revision).Trim()
+} else {
+    $env:SCRAPEX_RUNTIME_REVISION = ""
+}
 $EndpointJson = & $Python -c "import json; from scrapex.config import Settings; settings = Settings.load(); print(json.dumps({'host': settings.host, 'port': settings.port}))"
 if ($LASTEXITCODE -ne 0) {
     throw "ScrapeX configuration preflight failed."
