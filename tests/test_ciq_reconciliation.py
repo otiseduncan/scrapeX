@@ -17,7 +17,7 @@ class FakeCIQ(CIQClient):
         return {
             "policy": {"routine": [
                 "update_ro", "add_calibration", "update_calibration",
-                "update_research", "import_document", "link_document",
+                "update_research", "import_document", "update_document", "link_document",
             ]},
             "batch": {"authoritative_verification": True},
         }
@@ -50,6 +50,14 @@ class FakeCIQ(CIQClient):
                 )
                 if isinstance(self.snapshot.get("research"), dict):
                     self.snapshot["research"]["version"] += 1
+            elif operation == "update_document":
+                row = next(
+                    value for value in self.snapshot["documents"]
+                    if value["id"] == action["target_id"]
+                )
+                row.update(action["arguments"].get("changes") or {})
+                row["version"] += 1
+                resource_id = row["id"]
             elif operation == "update_calibration":
                 row = next(
                     value for value in self.snapshot["calibrations"]
@@ -319,6 +327,53 @@ async def test_saved_adas_map_is_attached_and_starts_research(tmp_path):
     assert result["adas_map_attachment"]["attached"] is True
     assert result["research_started"]["to_state"] == "research_in_progress"
     assert result["receipt_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_existing_generic_map_file_is_reclassified_in_place(tmp_path):
+    current = snapshot()
+    current["research"] = {
+        "id": "research-1",
+        "state": "research_required",
+        "version": 5,
+    }
+    current["documents"] = [
+        {
+            "id": "doc-legacy",
+            "version": 2,
+            "document_type": "supporting_service_information",
+            "semantic_type": "SUPPORTING_SERVICE_INFO",
+            "status": "candidate",
+            "source_name": "2400911578 ADAS Map.pdf",
+            "original_filename": "2400911578 ADAS Map.pdf",
+            "storage_relative_path": "supporting-documents/2400911578 ADAS Map.pdf",
+        }
+    ]
+    report = tmp_path / "2400911578 ADAS Map.pdf"
+    report.write_bytes(b"%PDF-1.4\n" + (b"0" * 512))
+    client = FakeCIQ(current)
+
+    result = await client.reconcile_requirements(
+        repair_order_id="ro-1",
+        requirements=["Blind Spot Sensors"],
+        batch_id="batch-1",
+        item_id="item-1",
+        inspection_id="9900001",
+        adas_map_path=str(report),
+        adas_map_ro_number="2400911578",
+    )
+
+    assert [action["operation"] for action in client.actions] == [
+        "update_document",
+        "update_research",
+    ]
+    repaired = client.snapshot["documents"][0]
+    assert repaired["document_type"] == "adas_map_report"
+    assert repaired["semantic_type"] == "ADAS_MAP_REPORT"
+    assert repaired["status"] == "validated"
+    assert result["adas_map_attachment"]["document_id"] == "doc-legacy"
+    assert result["adas_map_attachment"]["semantic_type"] == "ADAS_MAP_REPORT"
+    assert client.snapshot["research"]["state"] == "research_in_progress"
 
 
 @pytest.mark.asyncio
