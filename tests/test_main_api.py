@@ -359,3 +359,29 @@ def test_final_summary_and_exceptions_never_claim_false_readiness(tmp_path: Path
     assert summary["state"] == "needs_operator"
     assert exceptions["count"] == 1
     assert exceptions["items"][0]["ro_number"] == "blocked-ro"
+
+
+def test_browser_status_reports_agentic_navigator_without_reactivating_legacy_batch(tmp_path: Path):
+    from scrapex.main import AppServices, create_app
+    from types import SimpleNamespace
+    from fastapi.testclient import TestClient
+
+    async def _status():
+        return {"reachable": True, "authorized": True, "active": True, "authenticated": True}
+
+    services = AppServices(
+        settings=SimpleNamespace(data_root=tmp_path / "data", adas_si_root=tmp_path / "ADAS SI"),
+        store=Store(tmp_path / "status.sqlite"),
+        ciq=SimpleNamespace(status=_status),
+        work_chrome=SimpleNamespace(),
+        adas_map_source=SimpleNamespace(status=_status),
+        adas_map_runner=SimpleNamespace(),
+        navigator_manager=SimpleNamespace(),
+        navigator_providers={"alldata": object()},
+    )
+    with TestClient(create_app(services)) as client:
+        body = client.get("/api/browser/status").json()
+    assert body["automation_enabled"] is True
+    assert body["mode"] == "agentic_navigator"
+    assert body["providers"] == ["alldata"]
+    assert body["legacy_batch_runner_frozen"] is True

@@ -373,12 +373,18 @@ async def work_chrome_status(request: Request) -> dict[str, Any]:
 
 @router.get("/api/browser/status")
 async def browser_status(request: Request) -> dict[str, Any]:
-    _services(request)
+    services = _services(request)
+    providers = sorted(services.navigator_providers)
     return {
-        "frozen": True,
-        "automation_enabled": False,
-        "mode": "manual_future",
-        "message": "ALLDATA automation is outside the current ScrapeX scope.",
+        "frozen": False,
+        "automation_enabled": bool(providers),
+        "mode": "agentic_navigator",
+        "providers": providers,
+        "legacy_batch_runner_frozen": True,
+        "message": (
+            "Dynamic SI research is enabled through the task-based Navigator. "
+            "The retired legacy ALLDATA batch runner remains frozen."
+        ),
     }
 
 

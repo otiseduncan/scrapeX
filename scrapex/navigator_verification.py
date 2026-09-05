@@ -43,11 +43,16 @@ def evaluate_navigation_claim(
     search-results listing, and real content was extracted from it.
     """
     now = datetime.now(UTC).replace(microsecond=0).isoformat()
+    matched_terms = list(matched_terms or [])
+    normalized_relevance = int(relevance_score or 0)
     base = {
         "vehicle_verified": False,
         "subject_verified": False,
         "procedure_leaf_verified": False,
         "content_extracted": False,
+        "query_submitted": bool(query_submitted),
+        "matched_terms": matched_terms,
+        "relevance_score": normalized_relevance,
         "source_url": source_url or None,
         "provider": provider,
         "captured_at": now,
@@ -67,17 +72,16 @@ def evaluate_navigation_claim(
     if not query_submitted:
         return {**base, "reason": "No target-scoped search/navigation action was submitted."}
 
-    matched_terms = list(matched_terms or [])
     if not matched_terms:
         return {
             **base,
             "reason": "The destination did not contain any of the requested subject's terms.",
         }
-    if int(relevance_score or 0) < min_relevance:
+    if normalized_relevance < min_relevance:
         return {
             **base,
             "reason": (
-                f"Relevance score {relevance_score} is below the verification "
+                f"Relevance score {normalized_relevance} is below the verification "
                 f"threshold ({min_relevance})."
             ),
         }

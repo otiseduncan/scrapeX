@@ -80,3 +80,20 @@ def test_unselected_target_claim_never_verified():
     assert result["verified"] is False
     assert result["vehicle_verified"] is False
     assert result["provider"] == "alldata"
+
+
+def test_verification_exposes_search_and_relevance_evidence():
+    proof = evaluate_navigation_claim(
+        target={"year": 2023, "make": "Toyota"},
+        target_state={"selected": True, "reason": None},
+        query_submitted=True,
+        matched_terms=["blind", "spot"],
+        relevance_score=2,
+        is_procedure_leaf=True,
+        extracted_text="2023 Toyota blind spot calibration procedure",
+        source_url="https://my.alldata.com/leaf",
+        provider="alldata",
+    )
+    assert proof["query_submitted"] is True
+    assert proof["matched_terms"] == ["blind", "spot"]
+    assert proof["relevance_score"] == 2

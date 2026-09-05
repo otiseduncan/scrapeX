@@ -1,8 +1,11 @@
 # ScrapeX v0.5.0
 
-ScrapeX is a standalone deterministic ADAS Map automation worker:
+ScrapeX is a standalone browser/evidence worker with two deliberately separate session paths:
 
-`Calibration IQ weekly queue → managed Work Chrome ADAS Map → verified CIQ reconciliation`
+- deterministic ADAS Map acquisition through the already-authenticated managed Work Chrome session;
+- agentic service-information navigation through ScrapeX Navigator provider sessions.
+
+`Calibration IQ → ADAS Map authority / SI research task → ScrapeX → verified evidence`
 
 Calibration IQ owns which repair orders are worked. ADAS Map is authoritative for
 VIN, vehicle identity, inspection identity, and required calibrations. ScrapeX fails
@@ -11,9 +14,10 @@ be proved.
 
 ## Current scope
 
-ScrapeX automates only ADAS Map in this release.
+ScrapeX keeps ADAS Map and service-information research separate because they use
+different authenticated browser contexts.
 
-- It operates the already-authenticated managed **Work Chrome** window through Windows
+- ADAS Map operates the already-authenticated managed **Work Chrome** window through Windows
   UI Automation.
 - It never launches a second ADAS Map profile and never reads Chrome cookies, passwords,
   credential stores, or profile databases.
@@ -23,9 +27,13 @@ ScrapeX automates only ADAS Map in this release.
   Calibration IQ operator API only when every receipt and authoritative reread verifies.
 - One failed RO is checkpointed for operator attention while the sequential batch continues.
 
-**ADAS SI and ALLDATA are frozen/manual-future work.** ScrapeX does not open or automate
-ALLDATA, capture procedures, index documents, or write to ADAS SI in the current scope.
-The dormant legacy helpers remain for compatibility but are not exposed by the runtime API.
+- ALLDATA/SI research runs through the task-based Navigator with a persistent provider
+  profile, accessibility/DOM observations, task-bound annotated screenshots for X Omni's
+  multimodal model, opaque element refs, backtracking/loop state, and deterministic
+  post-navigation verification.
+- Credentials remain outside model context. The Navigator operates the authenticated
+  browser session and exposes page state, not stored secrets.
+- The old ALLDATA batch runner remains retired/frozen; it is not the live SI path.
 
 ## Local-only security boundary
 
@@ -68,8 +76,9 @@ The normal workflow is:
 5. Review the truthful ready/attention summary and exact CIQ mutation receipts.
 
 The production API exposes health/status, CIQ preview/import, batch CRUD/summary/exceptions,
-and ADAS Map process-one/start/pause operations. `/api/browser/status` reports ALLDATA as
-`frozen/manual_future`; there is no browser-launch or ALLDATA mutation endpoint.
+ADAS Map process-one/start/pause operations, and task-based Navigator endpoints for dynamic
+SI research. `/api/browser/status` reports the Navigator separately from the retired
+legacy ALLDATA batch runner.
 
 ## Validation
 
@@ -87,7 +96,8 @@ Live acceptance order is strict:
 2. One Macon, one Warner Robins, and one Perry RO.
 3. The complete weekly ADAS Map batch.
 
-No ALLDATA or ADAS SI live action belongs to this acceptance run.
+ADAS Map acceptance remains separate from SI Navigator acceptance so the work-profile
+session is never conflated with the SI provider session.
 
 ## Git bootstrap
 
