@@ -39,6 +39,17 @@ class FakeCIQ(CIQClient):
                 self.snapshot["research"].update(action["arguments"])
                 self.snapshot["research"]["version"] += 1
                 resource_id = self.snapshot["research"]["id"]
+            elif operation == "import_document":
+                resource_id = f"doc-{len(self.snapshot.setdefault('documents', [])) + 1}"
+                self.snapshot["documents"].append(
+                    {
+                        "id": resource_id,
+                        "version": 1,
+                        **action["arguments"],
+                    }
+                )
+                if isinstance(self.snapshot.get("research"), dict):
+                    self.snapshot["research"]["version"] += 1
             elif operation == "update_calibration":
                 row = next(
                     value for value in self.snapshot["calibrations"]
@@ -264,6 +275,92 @@ async def test_explicit_no_calibration_can_verify_when_ciq_has_no_active_rows():
     assert result["verified"] is True
     assert result["explicit_no_calibration"] is True
     assert client.actions == []
+
+
+@pytest.mark.asyncio
+async def test_saved_adas_map_is_attached_and_starts_research(tmp_path):
+    current = snapshot()
+    current["research"] = {
+        "id": "research-1",
+        "state": "research_required",
+        "version": 3,
+    }
+    report = tmp_path / "2400911578 ADAS Map.pdf"
+    report.write_bytes(b"%PDF-1.4\n" + (b"0" * 512))
+    client = FakeCIQ(current)
+
+    result = await client.reconcile_requirements(
+        repair_order_id="ro-1",
+        requirements=["Blind Spot Sensors"],
+        batch_id="batch-1",
+        item_id="item-1",
+        inspection_id="9900001",
+        adas_map_path=str(report),
+        adas_map_ro_number="2400911578",
+        adas_map_source_url="https://opus.adasmap.com/details/9900001",
+    )
+
+    assert [action["operation"] for action in client.actions] == [
+        "import_document",
+        "update_research",
+    ]
+    imported, started = client.actions
+    assert imported["arguments"]["document_type"] == "adas_map_report"
+    assert imported["arguments"]["semantic_type"] == "ADAS_MAP_REPORT"
+    assert imported["arguments"]["status"] == "validated"
+    assert imported["arguments"]["evidence_role"] == "JUSTIFICATION"
+    assert imported["arguments"]["source_uri"] == (
+        "adas-si:///ADAS%20Map/2400911578/"
+        "2400911578%20ADAS%20Map.pdf"
+    )
+    assert started["expected_version"] == 4
+    assert started["arguments"]["state"] == "research_in_progress"
+    assert client.snapshot["research"]["state"] == "research_in_progress"
+    assert result["adas_map_attachment"]["attached"] is True
+    assert result["research_started"]["to_state"] == "research_in_progress"
+    assert result["receipt_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_existing_adas_map_attachment_is_idempotent(tmp_path):
+    current = snapshot()
+    current["research"] = {
+        "id": "research-1",
+        "state": "research_in_progress",
+        "version": 5,
+    }
+    current["documents"] = [
+        {
+            "id": "doc-1",
+            "version": 2,
+            "document_type": "adas_map_report",
+            "semantic_type": "ADAS_MAP_REPORT",
+            "status": "validated",
+            "source_name": "2400911578 ADAS Map.pdf",
+            "source_uri": (
+                "adas-si:///ADAS%20Map/2400911578/"
+                "2400911578%20ADAS%20Map.pdf"
+            ),
+        }
+    ]
+    report = tmp_path / "2400911578 ADAS Map.pdf"
+    report.write_bytes(b"%PDF-1.4\n" + (b"0" * 512))
+    client = FakeCIQ(current)
+
+    result = await client.reconcile_requirements(
+        repair_order_id="ro-1",
+        requirements=["Blind Spot Sensors"],
+        batch_id="batch-1",
+        item_id="item-1",
+        inspection_id="9900001",
+        adas_map_path=str(report),
+        adas_map_ro_number="2400911578",
+    )
+
+    assert client.actions == []
+    assert result["adas_map_attachment"]["document_id"] == "doc-1"
+    assert result["research_started"] is None
+    assert result["receipt_count"] == 0
 
 
 @pytest.mark.asyncio
