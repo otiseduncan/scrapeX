@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -324,6 +325,10 @@ async def health(request: Request) -> dict[str, Any]:
         "service": "ScrapeX",
         "version": __version__,
         "loopback": True,
+        "runtime_pid": os.getpid(),
+        "runtime_revision": os.environ.get("SCRAPEX_RUNTIME_REVISION") or None,
+        "project_root": str(services.settings.root),
+        "adas_map_contract_version": ADAS_MAP_CONTRACT_VERSION,
         "adas_si_root": str(services.settings.adas_si_root),
         "data_root": str(services.settings.data_root),
         "ciq": ciq_status,
