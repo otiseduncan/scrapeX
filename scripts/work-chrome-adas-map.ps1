@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("status", "inspect", "lookup", "read-current", "details", "close-details", "open-report", "download-report", "open-oe-link", "read-window", "capture-oe-si", "return-to-adas")]
+    [ValidateSet("status", "open", "inspect", "lookup", "read-current", "details", "close-details", "open-report", "download-report", "open-oe-link", "read-window", "capture-oe-si", "return-to-adas")]
     [string]$Action = "status",
 
     [string]$RoNumber = "",
@@ -7,6 +7,10 @@ param(
     [string]$SavePath = "",
 
     [string]$InspectionId = "",
+
+    [string]$HomeUrl = "",
+
+    [string]$ChromeProfile = "",
 
     [int]$ExpectedYear = 0,
 
@@ -172,6 +176,39 @@ function Get-Chrome-Windows {
     }
 
     return @($result)
+}
+
+function Resolve-Chrome-Executable {
+    # The sign-in handoff must open real Google Chrome (the managed work
+    # browser), never whatever the default http handler happens to be.
+    $candidates = @()
+    foreach ($registryPath in @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe"
+    )) {
+        try {
+            $item = Get-ItemProperty -Path $registryPath -ErrorAction Stop
+            $value = [string]$item.'(default)'
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                $candidates += $value.Trim('"')
+            }
+        }
+        catch {}
+    }
+    foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
+        if (-not [string]::IsNullOrWhiteSpace($base)) {
+            $candidates += (Join-Path $base "Google\Chrome\Application\chrome.exe")
+        }
+    }
+    foreach ($candidate in $candidates) {
+        try {
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                return $candidate
+            }
+        }
+        catch {}
+    }
+    return $null
 }
 
 function Get-All-Top-Windows {
@@ -3134,6 +3171,104 @@ try {
                     handle = $target.handle
                 }
             } else { $null }
+            chrome_windows = $windowSummary
+        } | ConvertTo-Json -Depth 8 -Compress
+        exit 0
+    }
+
+    if ($Action -eq "open") {
+        # Interactive sign-in handoff. When an ADAS Map window already exists
+        # (even a login page) it is only fronted so the operator can sign in
+        # there; a brand-new Chrome window/tab is launched only when no ADAS
+        # Map window is visible at all, so repeated open calls never stack
+        # duplicate sign-in tabs. Credentials are never read or entered here.
+        if ($null -ne $target) {
+            $fronted = Bring-To-Front -Target $target
+            [pscustomobject]@{
+                success = $true
+                action = "open"
+                status = "focused_existing"
+                launched = $false
+                focused = [bool]$fronted
+                target_found = $true
+                target = @{
+                    title = $target.title
+                    process_id = $target.process_id
+                    handle = $target.handle
+                }
+                chrome_windows = $windowSummary
+            } | ConvertTo-Json -Depth 8 -Compress
+            exit 0
+        }
+
+        if ([string]::IsNullOrWhiteSpace($HomeUrl)) {
+            [pscustomobject]@{
+                success = $false
+                action = "open"
+                status = "home_url_missing"
+                launched = $false
+                focused = $false
+                target_found = $false
+                message = "No ADAS Map window is open and no -HomeUrl was provided to launch one."
+                chrome_windows = $windowSummary
+            } | ConvertTo-Json -Depth 8 -Compress
+            exit 0
+        }
+
+        $chromeExe = Resolve-Chrome-Executable
+        if ($null -eq $chromeExe) {
+            [pscustomobject]@{
+                success = $false
+                action = "open"
+                status = "chrome_not_found"
+                launched = $false
+                focused = $false
+                target_found = $false
+                message = "Google Chrome could not be located to open the managed ADAS Map sign-in page."
+                chrome_windows = $windowSummary
+            } | ConvertTo-Json -Depth 8 -Compress
+            exit 0
+        }
+
+        $launchArgs = @()
+        if (-not [string]::IsNullOrWhiteSpace($ChromeProfile)) {
+            $launchArgs += "--profile-directory=$ChromeProfile"
+        }
+        $launchArgs += $HomeUrl
+        Start-Process -FilePath $chromeExe -ArgumentList $launchArgs | Out-Null
+
+        # Poll briefly for the ADAS Map-titled window so the caller learns
+        # whether the sign-in page actually became visible.
+        $opened = $null
+        for ($poll = 0; $poll -lt 24; $poll++) {
+            Start-Sleep -Milliseconds 500
+            $windowsNow = @(Get-Chrome-Windows)
+            $opened = Select-AdasMap-Window -Windows $windowsNow
+            if ($null -ne $opened) { break }
+        }
+        $frontedNew = $false
+        if ($null -ne $opened) {
+            $frontedNew = [bool](Bring-To-Front -Target $opened)
+        }
+        [pscustomobject]@{
+            success = ($null -ne $opened)
+            action = "open"
+            status = if ($null -ne $opened) { "launched" } else { "launch_unverified" }
+            launched = $true
+            focused = $frontedNew
+            target_found = ($null -ne $opened)
+            target = if ($null -ne $opened) {
+                @{
+                    title = $opened.title
+                    process_id = $opened.process_id
+                    handle = $opened.handle
+                }
+            } else { $null }
+            message = if ($null -ne $opened) {
+                "The managed ADAS Map sign-in window was opened; interactive sign-in may be required."
+            } else {
+                "Chrome was launched at the ADAS Map home page, but no ADAS Map-titled window became visible yet."
+            }
             chrome_windows = $windowSummary
         } | ConvertTo-Json -Depth 8 -Compress
         exit 0

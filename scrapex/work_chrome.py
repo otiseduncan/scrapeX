@@ -144,6 +144,8 @@ class WorkChromeBridge:
         save_path: str | None = None,
         inspection_id: str | None = None,
         expected: Any = None,
+        home_url: str | None = None,
+        chrome_profile: str | None = None,
     ) -> dict[str, Any]:
         async with self._lock:
             return await self._run_locked(
@@ -152,6 +154,8 @@ class WorkChromeBridge:
                 save_path=save_path,
                 inspection_id=inspection_id,
                 expected=expected,
+                home_url=home_url,
+                chrome_profile=chrome_profile,
             )
 
     async def _run_locked(
@@ -161,6 +165,8 @@ class WorkChromeBridge:
         save_path: str | None = None,
         inspection_id: str | None = None,
         expected: Any = None,
+        home_url: str | None = None,
+        chrome_profile: str | None = None,
     ) -> dict[str, Any]:
         if os.name != "nt":
             return {
@@ -192,6 +198,10 @@ class WorkChromeBridge:
             args += ["-SavePath", str(save_path)]
         if inspection_id:
             args += ["-InspectionId", str(inspection_id)]
+        if home_url:
+            args += ["-HomeUrl", str(home_url)]
+        if chrome_profile:
+            args += ["-ChromeProfile", str(chrome_profile)]
         expected_year = _expected_field(expected, "year")
         expected_make = _compact_text(_expected_field(expected, "make"))
         expected_model = _compact_text(_expected_field(expected, "model"))
@@ -252,6 +262,17 @@ class WorkChromeBridge:
 
     async def status(self) -> dict[str, Any]:
         return await self._run("status")
+
+    async def open_window(
+        self,
+        home_url: str | None = None,
+        chrome_profile: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._run(
+            "open",
+            home_url=home_url,
+            chrome_profile=chrome_profile,
+        )
 
     async def inspect(self) -> dict[str, Any]:
         return await self._run("inspect")
@@ -330,12 +351,20 @@ class WorkChromeAdasMapSource:
         "business_selection_unconfirmed": "portal_layout_unknown",
     }
 
-    def __init__(self, bridge: WorkChromeBridge, adas_si_root: Path | None = None):
+    def __init__(
+        self,
+        bridge: WorkChromeBridge,
+        adas_si_root: Path | None = None,
+        home_url: str | None = None,
+        chrome_profile: str | None = None,
+    ):
         self.bridge = bridge
         self.adas_si_root = Path(adas_si_root) if adas_si_root else None
+        self.home_url = str(home_url or "").strip() or None
+        self.chrome_profile = str(chrome_profile or "").strip() or None
 
-    async def status(self) -> dict[str, Any]:
-        result = await self.bridge.status()
+    @staticmethod
+    def _window_status(result: dict[str, Any]) -> dict[str, Any]:
         target = result.get("target") or {}
         title = str(target.get("title") or "")
         active = bool(result.get("target_found"))
@@ -346,11 +375,27 @@ class WorkChromeAdasMapSource:
             "title": title or None,
         }
 
+    async def status(self) -> dict[str, Any]:
+        return self._window_status(await self.bridge.status())
+
     async def open(self) -> dict[str, Any]:
-        # There is no separate browser to launch here -- ADAS Map only ever
-        # runs in the operator's already-open, already-authenticated managed
-        # work Chrome window. "Opening" just means checking it is there.
-        return await self.status()
+        # ADAS Map work always happens in the operator's managed work-Chrome
+        # window, and sign-in stays interactive there -- no credential ever
+        # passes through ScrapeX. "Opening" therefore means: focus the ADAS
+        # Map window when one is already visible, and otherwise launch the
+        # managed work-Chrome profile at the ADAS Map home page so the
+        # operator is one interactive sign-in away from ready.
+        result = await self.bridge.open_window(
+            home_url=self.home_url,
+            chrome_profile=self.chrome_profile,
+        )
+        status = self._window_status(result)
+        status["opened"] = result.get("launched") is True
+        status["focused"] = result.get("focused") is True
+        message = _compact_text(result.get("message"))
+        if message:
+            status["message"] = message
+        return status
 
     async def lookup(
         self,

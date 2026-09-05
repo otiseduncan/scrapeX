@@ -692,3 +692,87 @@ async def test_source_requires_modal_close_before_returning_success():
     assert result["status"] == "details_close_failed"
     assert result["detail_close"]["status"] == "details_not_open"
     assert bridge.close_calls == 1
+
+
+class FakeOpenBridge:
+    def __init__(self, open_result: dict):
+        self.open_result = open_result
+        self.open_calls: list[tuple[str | None, str | None]] = []
+
+    async def open_window(self, home_url=None, chrome_profile=None):
+        self.open_calls.append((home_url, chrome_profile))
+        return self.open_result
+
+
+@pytest.mark.asyncio
+async def test_open_launches_managed_sign_in_with_configured_home_and_profile():
+    bridge = FakeOpenBridge(
+        {
+            "success": True,
+            "status": "launched",
+            "launched": True,
+            "focused": True,
+            "target_found": True,
+            "target": {"title": "Login | ADAS Map - Google Chrome"},
+            "message": "The managed ADAS Map sign-in window was opened.",
+        }
+    )
+    source = WorkChromeAdasMapSource(
+        bridge,
+        home_url="https://opus.adasmap.com/login",
+        chrome_profile="Profile 7",
+    )
+
+    status = await source.open()
+
+    assert bridge.open_calls == [("https://opus.adasmap.com/login", "Profile 7")]
+    assert status["active"] is True
+    # A freshly opened login page is visible but never counted as signed in.
+    assert status["authenticated"] is False
+    assert status["opened"] is True
+    assert status["focused"] is True
+
+
+@pytest.mark.asyncio
+async def test_open_focuses_existing_authenticated_window_without_launching():
+    bridge = FakeOpenBridge(
+        {
+            "success": True,
+            "status": "focused_existing",
+            "launched": False,
+            "focused": True,
+            "target_found": True,
+            "target": {"title": "ADAS - adas - Google Chrome"},
+        }
+    )
+    source = WorkChromeAdasMapSource(bridge, home_url="https://opus.adasmap.com/login")
+
+    status = await source.open()
+
+    assert status["active"] is True
+    assert status["authenticated"] is True
+    assert status["opened"] is False
+    assert status["focused"] is True
+
+
+@pytest.mark.asyncio
+async def test_open_reports_honest_failure_when_no_window_became_visible():
+    bridge = FakeOpenBridge(
+        {
+            "success": False,
+            "status": "launch_unverified",
+            "launched": True,
+            "focused": False,
+            "target_found": False,
+            "target": None,
+            "message": "Chrome was launched, but no ADAS Map window became visible.",
+        }
+    )
+    source = WorkChromeAdasMapSource(bridge, home_url="https://opus.adasmap.com/login")
+
+    status = await source.open()
+
+    assert status["active"] is False
+    assert status["authenticated"] is False
+    assert status["opened"] is True
+    assert status["focused"] is False

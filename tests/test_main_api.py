@@ -114,6 +114,7 @@ def make_services(tmp_path: Path) -> AppServices:
     adas_source = FakeStatusSource()
     return AppServices(
         settings=SimpleNamespace(
+            root=tmp_path,
             data_root=tmp_path / "data",
             adas_si_root=tmp_path / "ADAS SI",
         ),
@@ -211,6 +212,25 @@ def test_exact_ciq_batch_is_bounded_and_authoritative(tmp_path: Path):
     assert body["requested_ro_numbers"] == ["9000000001", "9000000002"]
     assert body["readiness"]["total"] == 2
     assert services.ciq.exact_calls == [(["9000000001", "9000000002"], "all")]
+
+
+def test_exact_ciq_batch_requires_authentication_before_creating_any_batch(
+    tmp_path: Path,
+):
+    services = make_services(tmp_path)
+    services.adas_map_source.authenticated = False
+    with TestClient(create_app(services)) as client:
+        response = client.post(
+            "/api/batches/from-ciq/exact",
+            json={"ro_numbers": ["9000000001"], "source_scope": "all"},
+        )
+        assert response.status_code == 409
+        assert "not authenticated" in response.json()["detail"]
+        # The failed request opened the interactive sign-in handoff exactly
+        # once and left no queued batch behind.
+        assert services.adas_map_source.opened == 1
+        assert client.get("/api/batches").json() == []
+    assert services.ciq.exact_calls == []
 
 
 def test_exact_ciq_batch_fails_closed_on_missing_or_extra_result(tmp_path: Path):

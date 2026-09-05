@@ -86,6 +86,8 @@ def build_default_services() -> AppServices:
     adas_map_source = WorkChromeAdasMapSource(
         work_chrome,
         adas_si_root=settings.adas_si_root,
+        home_url=settings.adas_map_home,
+        chrome_profile=settings.adas_map_chrome_profile,
     )
     return AppServices(
         settings=settings,
@@ -299,7 +301,12 @@ async def _navigator_call(call):
 
 async def _ensure_adas_map_authenticated(services: AppServices) -> dict[str, Any]:
     status = await services.adas_map_source.status()
-    if not status.get("active"):
+    if not status.get("authenticated"):
+        # Opening is the interactive sign-in handoff: it focuses the managed
+        # ADAS Map window when one is already visible and otherwise launches
+        # the managed work-Chrome sign-in page, so a single failed request
+        # leaves the operator one interactive sign-in away from ready.
+        # Credentials never pass through ScrapeX.
         status = await services.adas_map_source.open()
     if not status.get("authenticated"):
         raise HTTPException(
@@ -629,6 +636,10 @@ async def create_from_exact_ciq(
     status = await services.ciq.status()
     if not status.get("authorized"):
         raise HTTPException(409, "Calibration IQ is not authorized for ScrapeX.")
+    # Authentication gates batch creation, not just batch execution: an exact
+    # acquisition request while signed out must fail with one clear
+    # authentication_required state instead of leaving a queued batch behind.
+    await _ensure_adas_map_authenticated(services)
     exact_lookup = getattr(services.ciq, "vehicles_for_ro_numbers", None)
     if exact_lookup is None:
         raise HTTPException(

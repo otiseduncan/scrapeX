@@ -134,7 +134,11 @@ async def _fake_status():
 def make_services(tmp_path: Path) -> AppServices:
     store = Store(tmp_path / "db.sqlite")
     return AppServices(
-        settings=SimpleNamespace(data_root=tmp_path / "data", adas_si_root=tmp_path / "ADAS SI"),
+        settings=SimpleNamespace(
+            root=tmp_path,
+            data_root=tmp_path / "data",
+            adas_si_root=tmp_path / "ADAS SI",
+        ),
         store=store,
         ciq=SimpleNamespace(status=_fake_status),
         work_chrome=SimpleNamespace(),

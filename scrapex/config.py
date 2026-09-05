@@ -93,6 +93,11 @@ class Settings:
     ciq_base_url: str
     ciq_project_path: Path
     adas_map_home: str
+    # Optional Chrome "Profile Directory" name (e.g. "Profile 2") that owns the
+    # managed ADAS Map work session. When set, opening the sign-in page targets
+    # exactly that profile. ADAS Map and ALLDATA/SI sessions are deliberately
+    # separate; this never merges them.
+    adas_map_chrome_profile: str
 
     @classmethod
     def load(cls):
@@ -150,6 +155,9 @@ class Settings:
                 "SCRAPEX_ADAS_MAP_HOME",
                 "https://opus.adasmap.com/login",
                 local_values,
+            ),
+            adas_map_chrome_profile=_configured_value(
+                "SCRAPEX_ADAS_MAP_CHROME_PROFILE", "", local_values
             ),
         )
 
