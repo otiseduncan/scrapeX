@@ -45,4 +45,7 @@ def test_normalize_adas_map_storage_paths_rewrites_legacy_absolute_path(tmp_path
         / "2400911731"
         / "2400911731 ADAS Map.pdf"
     )
-    assert expected in refreshed["adas_map_report_links_json"]
+    assert json.loads(refreshed["adas_map_report_links_json"]) == [expected]
+    assert json.loads(refreshed["adas_map_raw_result_json"])["report_links"] == [
+        expected
+    ]

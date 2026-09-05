@@ -225,8 +225,10 @@ def _readiness(services: AppServices, batch: dict[str, Any]) -> dict[str, Any]:
         "state": state,
         "blockers": blockers,
         "downstream": {
-            "adas_si_coverage": "manual_future",
-            "alldata_acquisition": "frozen_manual_future",
+            # SI research is intentionally outside the ADAS Map batch
+            # readiness calculation, but it is no longer manual/future.
+            "adas_si_coverage": "x_omni_vehicle_library",
+            "alldata_acquisition": "agentic_navigator",
         },
     }
 
@@ -327,9 +329,11 @@ async def health(request: Request) -> dict[str, Any]:
         "ciq": ciq_status,
         "adas_map": adas_status,
         "alldata": {
-            "frozen": True,
-            "automation_enabled": False,
-            "mode": "manual_future",
+            "frozen": False,
+            "automation_enabled": bool(services.navigator_providers),
+            "mode": "agentic_navigator",
+            "providers": sorted(services.navigator_providers),
+            "legacy_batch_runner_frozen": True,
         },
         "navigator": {
             "providers": sorted(services.navigator_providers),
@@ -826,7 +830,7 @@ button{background:var(--blue);color:white;border:0;border-radius:8px;padding:9px
 <section class="grid">
  <div class="card"><h3>Calibration IQ</h3><div id="ciq">Checking…</div></div>
  <div class="card"><h3>ADAS Map · Work Chrome</h3><div id="adas">Checking…</div><button class="secondary" onclick="openAdas()">Find managed Chrome</button></div>
- <div class="card"><h3>Downstream SI</h3><div id="alldata">Frozen / manual future</div><div class="muted">ADAS SI coverage and ALLDATA acquisition are outside the current automated scope.</div></div>
+ <div class="card"><h3>Downstream SI</h3><div id="alldata">Checking Navigator…</div><div class="muted">SI research is separate from ADAS Map batch readiness and is driven by X Omni through ScrapeX Navigator.</div></div>
 </section>
 
 <section class="card"><h3>1. Build the CIQ queue</h3>
@@ -837,7 +841,7 @@ button{background:var(--blue);color:white;border:0;border-radius:8px;padding:9px
 </section>
 
 <section class="card"><h3>2. Run staged research</h3>
-<div class="muted">Use “Process one” for acceptance ROs, then run the full ADAS Map batch. Readiness means authoritative requirements were extracted and verified against the same CIQ RO. Downstream SI work remains manual/future.</div>
+<div class="muted">Use “Process one” for acceptance ROs, then run the full ADAS Map batch. Readiness means authoritative requirements were extracted and verified against the same CIQ RO. SI research remains a separate X Omni Navigator workflow and is not counted as ADAS Map batch readiness.</div>
 </section>
 
 <section class="card"><h3>Batches and final readiness</h3><div id="batches">Loading…</div></section>
@@ -857,8 +861,8 @@ async function refresh(){
  const [c,a,d,rows]=await Promise.all([req('/api/ciq/status'),req('/api/adas-map/status'),req('/api/browser/status'),req('/api/batches')]);
  document.getElementById('ciq').innerHTML=`<span class="pill">${c.reachable?'reachable':'offline'}</span><span class="pill">${c.authorized?'authorized':'not authorized'}</span><div class="${statusClass(c.authorized,c.reachable)}">${c.authorized?'Ready':'Needs attention'}</div>`;
  document.getElementById('adas').innerHTML=`<span class="pill">${a.active?'active':'not found'}</span><span class="pill">${a.authenticated?'authenticated':'login needed'}</span><div class="${statusClass(a.authenticated,a.active)}">${esc(a.title||a.message||'Managed work Chrome')}</div>`;
- document.getElementById('alldata').innerHTML=`<span class="pill">${d.frozen?'frozen':'manual'}</span><span class="pill">automation off</span><div class="muted">${esc(d.message||'Manual/future downstream scope')}</div>`;
- document.getElementById('batches').innerHTML=rows.length?'<table><tr><th>Batch</th><th>ADAS Map</th><th>CIQ reconciliation</th><th>Current-scope truth</th><th>Controls</th></tr>'+rows.map(row=>{const r=row.readiness||{},total=r.total||0,pct=total?Math.round(100*(r.adas_map_complete||0)/total):0;return `<tr><td><b>${esc(row.name)}</b><br><span class="muted">${esc(row.state)}</span></td><td>${r.adas_map_complete||0}/${total} verified<div class="progress"><div style="width:${pct}%"></div></div><span class="${r.adas_map_attention?'warn':'muted'}">${r.adas_map_attention||0} attention · ${r.adas_map_unresolved||0} unresolved</span></td><td>${r.ciq_reconciled||0}/${total}<br><span class="muted">ADAS Map + CIQ only</span></td><td class="${r.ready?'good':r.needs_operator?'warn':'muted'}"><b>${r.ready?'ADAS/CIQ ready':esc(r.state)}</b><br>${esc((r.blockers||[]).join(' '))}<br><span class="muted">SI downstream: manual/future</span></td><td class="controls"><input id="ro-${row.id}" placeholder="Exact RO" size="14"><button onclick="oneAdas('${row.id}')">Process one ADAS Map</button><br><button onclick="runAdas('${row.id}')">Run ADAS Map batch</button><button class="secondary" onclick="pauseAdas('${row.id}')">Pause</button><br><button class="secondary" onclick="showSummary('${row.id}')">Summary</button><button class="secondary" onclick="showExceptions('${row.id}')">Exceptions</button></td></tr>`}).join('')+'</table>':'No batches yet.';
+ document.getElementById('alldata').innerHTML=`<span class="pill">${d.automation_enabled?'navigator ready':'navigator unavailable'}</span><span class="pill">${esc(d.mode||'unknown')}</span><div class="muted">${esc(d.message||'SI Navigator status unavailable')}</div>`;
+ document.getElementById('batches').innerHTML=rows.length?'<table><tr><th>Batch</th><th>ADAS Map</th><th>CIQ reconciliation</th><th>Current-scope truth</th><th>Controls</th></tr>'+rows.map(row=>{const r=row.readiness||{},total=r.total||0,pct=total?Math.round(100*(r.adas_map_complete||0)/total):0;return `<tr><td><b>${esc(row.name)}</b><br><span class="muted">${esc(row.state)}</span></td><td>${r.adas_map_complete||0}/${total} verified<div class="progress"><div style="width:${pct}%"></div></div><span class="${r.adas_map_attention?'warn':'muted'}">${r.adas_map_attention||0} attention · ${r.adas_map_unresolved||0} unresolved</span></td><td>${r.ciq_reconciled||0}/${total}<br><span class="muted">ADAS Map + CIQ only</span></td><td class="${r.ready?'good':r.needs_operator?'warn':'muted'}"><b>${r.ready?'ADAS/CIQ ready':esc(r.state)}</b><br>${esc((r.blockers||[]).join(' '))}<br><span class="muted">SI downstream: X Omni Navigator</span></td><td class="controls"><input id="ro-${row.id}" placeholder="Exact RO" size="14"><button onclick="oneAdas('${row.id}')">Process one ADAS Map</button><br><button onclick="runAdas('${row.id}')">Run ADAS Map batch</button><button class="secondary" onclick="pauseAdas('${row.id}')">Pause</button><br><button class="secondary" onclick="showSummary('${row.id}')">Summary</button><button class="secondary" onclick="showExceptions('${row.id}')">Exceptions</button></td></tr>`}).join('')+'</table>':'No batches yet.';
 }
 async function action(url){try{await req(url,{method:'POST',body:'{}'});await refresh()}catch(e){alert(e.message)}}
 async function oneAdas(id){const ro=document.getElementById('ro-'+id).value.trim();if(!ro){alert('Enter the exact RO number.');return}await action(`/api/batches/${id}/adas-map/process-one/${encodeURIComponent(ro)}`)}

@@ -152,12 +152,17 @@ def test_health_dashboard_and_production_route_surface(tmp_path: Path):
         assert client.post("/api/browser/open").status_code == 404
         assert client.post("/api/batches/anything/alldata/start").status_code == 404
         assert client.post("/api/batches", json={"name": "forged", "vehicles": []}).status_code == 405
-        frozen = client.get("/api/browser/status").json()
-        assert frozen == {
-            "frozen": True,
-            "automation_enabled": False,
-            "mode": "manual_future",
-            "message": "ALLDATA automation is outside the current ScrapeX scope.",
+        navigator = client.get("/api/browser/status").json()
+        assert navigator == {
+            "frozen": False,
+            "automation_enabled": True,
+            "mode": "agentic_navigator",
+            "providers": ["alldata"],
+            "legacy_batch_runner_frozen": True,
+            "message": (
+                "Dynamic SI research is enabled through the task-based Navigator. "
+                "The retired legacy ALLDATA batch runner remains frozen."
+            ),
         }
 
 
@@ -354,7 +359,8 @@ def test_final_summary_and_exceptions_never_claim_false_readiness(tmp_path: Path
         summary = client.get(f"/api/batches/{batch_id}/summary").json()["readiness"]
         exceptions = client.get(f"/api/batches/{batch_id}/exceptions").json()
     assert summary["adas_map_complete"] == 1
-    assert summary["downstream"]["alldata_acquisition"] == "frozen_manual_future"
+    assert summary["downstream"]["alldata_acquisition"] == "agentic_navigator"
+    assert summary["downstream"]["adas_si_coverage"] == "x_omni_vehicle_library"
     assert summary["ready"] is False
     assert summary["state"] == "needs_operator"
     assert exceptions["count"] == 1

@@ -39,7 +39,8 @@ def test_release_metadata_and_documentation_are_coherent() -> None:
     for term in ("calibration iq", "adas map", "work chrome"):
         assert term in project["description"].casefold()
         assert term in readme.casefold()
-    assert "alldata are frozen/manual-future" in readme.casefold()
+    assert "agentic service-information navigation" in readme.casefold()
+    assert "old alldata batch runner remains retired/frozen" in readme.casefold()
 
 
 def test_constraints_cover_every_declared_dependency() -> None:
@@ -110,7 +111,8 @@ def test_install_script_is_standalone_and_constraint_backed() -> None:
     assert "pip check" in folded
     assert "-p no:cacheprovider" in script
     assert "playwright install" not in folded
-    assert "alldata automation is frozen/manual-future" in folded
+    assert "task-based si navigator is available" in folded
+    assert "legacy alldata batch runner remains retired/frozen" in folded
 
 
 def test_start_script_uses_validated_settings_for_its_endpoint() -> None:

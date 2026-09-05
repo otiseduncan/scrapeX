@@ -81,4 +81,4 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "`nScrapeX ready. Start with .\scripts\start.ps1" -ForegroundColor Green
-Write-Host "ALLDATA automation is frozen/manual-future; no browser was installed or launched." -ForegroundColor Yellow
+Write-Host "Task-based SI Navigator is available; the legacy ALLDATA batch runner remains retired/frozen. No browser was installed or launched." -ForegroundColor Yellow

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "scrapex"
 version = "0.5.0"
-description = "Deterministic Calibration IQ to ADAS Map automation using managed Work Chrome"
+description = "Calibration IQ ADAS Map automation using managed Work Chrome plus agentic SI navigation"
 requires-python = ">=3.11,<3.15"
 dependencies = [
   "fastapi>=0.115,<1",
