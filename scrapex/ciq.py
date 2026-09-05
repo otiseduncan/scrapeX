@@ -621,6 +621,87 @@ class CIQClient:
                 output.append(item)
         return output
 
+    async def _reopen_completed_research(
+        self,
+        *,
+        snapshot: dict[str, Any],
+        repair_order_id: str,
+        inspection_id: str | None,
+        correlation: str,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Step a completed research case back to in-progress before evidence changes.
+
+        Returns the snapshot to keep working from and any receipts produced. A
+        case that is not complete is left exactly as it is.
+        """
+        research = snapshot.get("research")
+        if not isinstance(research, dict):
+            return snapshot, []
+        if str(research.get("state") or "").strip().casefold() != "research_complete":
+            return snapshot, []
+        research_id = str(research.get("id") or "").strip()
+        try:
+            research_version = int(research.get("version"))
+        except (TypeError, ValueError):
+            research_version = 0
+        if not research_id or research_version < 1:
+            raise CIQReconciliationError(
+                "CIQ research state is not authoritative enough to reopen for "
+                "the ADAS Map attachment."
+            )
+
+        arguments = {
+            "state": "research_in_progress",
+            "reason": (
+                "Authoritative ADAS Map"
+                f"{f' inspection {inspection_id}' if inspection_id else ''} was "
+                "acquired and attached; research reopened for managed evidence "
+                "review."
+            ),
+        }
+        identity = {
+            "reconciliation_contract_version": RECONCILIATION_CONTRACT_VERSION,
+            "operation": "update_research",
+            "repair_order_id": repair_order_id,
+            "expected_version": research_version,
+            "arguments": arguments,
+            "inspection_id": inspection_id,
+        }
+        response = await self._post_actions([
+            {
+                "idempotency_key": self._idempotency(identity),
+                "correlation_id": correlation,
+                "operation": "update_research",
+                "repair_order_id": repair_order_id,
+                "expected_version": research_version,
+                "arguments": arguments,
+            }
+        ])
+        receipts = list(response.get("receipts") or [])
+
+        refreshed = await self._snapshot(repair_order_id)
+        reopened = refreshed.get("research")
+        if not isinstance(reopened, dict):
+            raise CIQReconciliationError(
+                "CIQ authoritative reread did not verify reopened research.",
+                result={"receipts": receipts},
+            )
+        try:
+            reopened_version = int(reopened.get("version"))
+        except (TypeError, ValueError):
+            reopened_version = 0
+        if (
+            str(reopened.get("id") or "").strip() != research_id
+            or str(reopened.get("state") or "").strip().casefold()
+            != "research_in_progress"
+            or reopened_version <= research_version
+        ):
+            raise CIQReconciliationError(
+                "CIQ authoritative reread did not verify reopened research.",
+                result={"receipts": receipts},
+            )
+        return refreshed, receipts
+
     async def _prepare_adas_map_evidence(
         self,
         *,
@@ -713,13 +794,37 @@ class CIQClient:
             )
 
         document = matching_document(snapshot)
+        needs_document_change = document is None or not (
+            is_adas_map_document(document) and has_canonical_identity(document)
+        )
+        # Calibration IQ refuses to change a document on a case that still
+        # claims completeness while its required calibrations carry no linked
+        # evidence, so an ADAS Map could not be attached or normalized on such
+        # an RO at all. Acquiring the authoritative map is exactly the event
+        # that reopens managed evidence review, and the case is demonstrably
+        # not finished, so step it down first -- but only when a change is
+        # actually needed, never merely to re-verify a document already
+        # canonical.
+        if needs_document_change:
+            snapshot, reopen_receipts = await self._reopen_completed_research(
+                snapshot=snapshot,
+                repair_order_id=repair_order_id,
+                inspection_id=inspection_id,
+                correlation=correlation,
+            )
+            receipts.extend(reopen_receipts)
+            if reopen_receipts:
+                document = matching_document(snapshot)
+                needs_document_change = document is None or not (
+                    is_adas_map_document(document)
+                    and has_canonical_identity(document)
+                )
+
         # Repair both a misclassified file and an ADAS Map already attached
         # under an earlier naming convention: downstream verification finds
         # this document by its canonical URI and filename, so an adopted
         # legacy row is normalized to that identity rather than duplicated.
-        if document is not None and not (
-            is_adas_map_document(document) and has_canonical_identity(document)
-        ):
+        if document is not None and needs_document_change:
             document_id = str(
                 document.get("id") or document.get("document_id") or ""
             ).strip()

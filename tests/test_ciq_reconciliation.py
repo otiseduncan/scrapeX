@@ -825,3 +825,84 @@ async def test_exact_queue_rejects_reused_internal_ro_identity():
     client = ReusedIdentityCIQ()
     with pytest.raises(RuntimeError, match="reused"):
         await client.vehicles_for_ro_numbers(["RO-1", "RO-2"])
+
+
+@pytest.mark.asyncio
+async def test_completed_research_is_reopened_before_the_map_is_attached(tmp_path):
+    """CIQ refuses document changes on a case that still claims completeness.
+
+    An RO marked research_complete whose required calibrations carry no linked
+    evidence rejected every document mutation with prerequisite_missing, so the
+    ADAS Map could not be attached or normalized on it at all. Acquiring the
+    authoritative map is exactly the event that reopens managed evidence
+    review, so step the case down first, then attach.
+    """
+    current = snapshot()
+    current["research"] = {
+        "id": "research-1",
+        "state": "research_complete",
+        "version": 7,
+    }
+    current["documents"] = []
+    report = tmp_path / "2400911578 ADAS Map.pdf"
+    report.write_bytes(b"%PDF-1.4\n" + (b"0" * 512))
+    client = FakeCIQ(current)
+
+    result = await client.reconcile_requirements(
+        repair_order_id="ro-1",
+        requirements=["Blind Spot Sensors"],
+        batch_id="batch-1",
+        item_id="item-1",
+        inspection_id="9900001",
+        adas_map_path=str(report),
+        adas_map_ro_number="2400911578",
+    )
+
+    operations = [action["operation"] for action in client.actions]
+    # The research step down happens before the document is imported.
+    assert operations[0] == "update_research"
+    assert "import_document" in operations
+    assert operations.index("update_research") < operations.index("import_document")
+    assert client.snapshot["research"]["state"] == "research_in_progress"
+    assert result["adas_map_attachment"]["attached"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_already_canonical_map_does_not_reopen_completed_research(tmp_path):
+    """Re-verifying finished work must not disturb a legitimately complete case."""
+    current = snapshot()
+    current["research"] = {
+        "id": "research-1",
+        "state": "research_complete",
+        "version": 7,
+    }
+    current["documents"] = [
+        {
+            "id": "doc-1",
+            "version": 2,
+            "document_type": "adas_map_report",
+            "semantic_type": "ADAS_MAP_REPORT",
+            "status": "validated",
+            "source_name": "2400911578 ADAS Map.pdf",
+            "source_uri": (
+                "adas-si:///ADAS%20Map/2400911578/2400911578%20ADAS%20Map.pdf"
+            ),
+        }
+    ]
+    report = tmp_path / "2400911578 ADAS Map.pdf"
+    report.write_bytes(b"%PDF-1.4\n" + (b"0" * 512))
+    client = FakeCIQ(current)
+
+    result = await client.reconcile_requirements(
+        repair_order_id="ro-1",
+        requirements=["Blind Spot Sensors"],
+        batch_id="batch-1",
+        item_id="item-1",
+        inspection_id="9900001",
+        adas_map_path=str(report),
+        adas_map_ro_number="2400911578",
+    )
+
+    assert "update_research" not in [a["operation"] for a in client.actions]
+    assert client.snapshot["research"]["state"] == "research_complete"
+    assert result["adas_map_attachment"]["document_id"] == "doc-1"
