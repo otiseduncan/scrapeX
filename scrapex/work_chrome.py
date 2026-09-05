@@ -448,6 +448,7 @@ class WorkChromeAdasMapSource:
             inspection_id=inspection_id,
             expected=expected,
         )
+        download_closed_modal = False
 
         async def finish_details(payload: dict[str, Any]) -> dict[str, Any]:
             payload.setdefault("lookup_row_expansion", lookup_row_expansion)
@@ -462,9 +463,17 @@ class WorkChromeAdasMapSource:
                 }
             payload["detail_close"] = close_result
             closed = (
-                close_result.get("success") is True
-                and close_result.get("status") == "details_closed"
+                (
+                    close_result.get("success") is True
+                    and close_result.get("status") == "details_closed"
+                )
+                or (
+                    download_closed_modal
+                    and close_result.get("status") == "details_not_open"
+                )
             )
+            if download_closed_modal:
+                payload["download_modal_close_verified"] = True
             if payload.get("success") and not closed:
                 return {
                     "success": False,
@@ -683,6 +692,12 @@ class WorkChromeAdasMapSource:
                 inspection_id=inspection_id,
             )
             download_status = download_result.get("status")
+            modal_close = (
+                download_result.get("modal_close")
+                if isinstance(download_result.get("modal_close"), dict)
+                else {}
+            )
+            download_closed_modal = modal_close.get("closed") is True
 
             if download_result.get("success") or download_status == "target_already_exists":
                 # target_already_exists means the report is already on disk

@@ -68,6 +68,7 @@ class FakeBridge:
         details: dict,
         lookup: dict | None = None,
         close_result: dict | None = None,
+        download_result: dict | None = None,
     ):
         self.details = details
         self.lookup = lookup if lookup is not None else {
@@ -89,10 +90,16 @@ class FakeBridge:
             "success": True,
             "status": "details_closed",
         }
+        self.download_result = download_result or {
+            "success": True,
+            "status": "saved",
+            "modal_close": {"closed": True},
+        }
         self.detail_calls: list[tuple[str, str | None]] = []
         self.lookup_expected: list[object] = []
         self.details_expected: list[object] = []
         self.close_calls = 0
+        self.download_calls: list[tuple[str, str, str | None]] = []
 
     async def status(self):
         return {
@@ -118,6 +125,15 @@ class FakeBridge:
     async def close_details(self):
         self.close_calls += 1
         return self.close_result
+
+    async def download_report(
+        self,
+        ro_number: str,
+        save_path: str,
+        inspection_id: str | None = None,
+    ):
+        self.download_calls.append((ro_number, save_path, inspection_id))
+        return self.download_result
 
 
 def proven_details(**overrides):
@@ -586,6 +602,41 @@ async def test_shop_proof_requires_whole_tokens_not_substring_overlap():
     assert result["success"] is False
     assert result["status"] == "shop_identity_mismatch"
     assert bridge.detail_calls == []
+
+
+@pytest.mark.asyncio
+async def test_report_download_can_close_modal_before_final_cleanup(tmp_path):
+    bridge = FakeBridge(
+        proven_details(),
+        close_result={"success": False, "status": "details_not_open"},
+        download_result={
+            "success": True,
+            "status": "saved",
+            "modal_close": {"closed": True},
+        },
+    )
+    source = WorkChromeAdasMapSource(bridge, adas_si_root=tmp_path)
+
+    result = await source.lookup(
+        "9000000001",
+        shop="Macon",
+        expected=expected_vehicle(),
+    )
+
+    assert result["success"] is True
+    assert result["status"] == "complete"
+    assert result["download_modal_close_verified"] is True
+    assert result["detail_close"]["status"] == "details_not_open"
+    assert bridge.close_calls == 1
+    assert len(bridge.download_calls) == 1
+    ro_number, save_path, inspection_id = bridge.download_calls[0]
+    assert ro_number == "9000000001"
+    assert inspection_id == "9900001"
+    assert save_path.endswith(
+        "ADAS Map\\9000000001\\9000000001 ADAS Map.pdf"
+    ) or save_path.endswith(
+        "ADAS Map/9000000001/9000000001 ADAS Map.pdf"
+    )
 
 
 @pytest.mark.asyncio

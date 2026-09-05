@@ -79,13 +79,13 @@ def build_default_services() -> AppServices:
     store = Store(settings.data_root / "scrapex.sqlite3")
     ciq = CIQClient(settings)
     work_chrome = WorkChromeBridge(settings.root)
-    # Reverted 2026-08-26: enabling adas_si_root surfaced a real bug -- the
-    # download-report interaction leaves the ADAS Map inspection modal in a
-    # state close_details() can't close, which finish_details() then treats
-    # as a hard failure even though the calibration data was captured fine.
-    # Re-enable only after work-chrome-adas-map.ps1's close/download sequence
-    # is fixed to tolerate the download step. See PLAN/handoff notes.
-    adas_map_source = WorkChromeAdasMapSource(work_chrome)
+    # ADAS Map report capture writes directly into the shared canonical
+    # ADAS SI root under ADAS Map/<RO>/. The source handles the report
+    # download and verifies that the inspection modal is left clean.
+    adas_map_source = WorkChromeAdasMapSource(
+        work_chrome,
+        adas_si_root=settings.adas_si_root,
+    )
     return AppServices(
         settings=settings,
         store=store,
