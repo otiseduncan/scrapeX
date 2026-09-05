@@ -125,8 +125,14 @@ def migrate_legacy_adas_map_reports(root: Path) -> dict[str, str]:
         ro = match.group("ro")
         destination = _unique_target(adas_map_pdf_path(root, ro), source)
         destination.parent.mkdir(parents=True, exist_ok=True)
+        if not source.is_file():
+            # X Omni may have migrated the same shared-root report first.
+            continue
         old_abs = str(source.resolve())
-        shutil.move(str(source), str(destination))
+        try:
+            shutil.move(str(source), str(destination))
+        except FileNotFoundError:
+            continue
         moved[old_abs] = str(destination.resolve())
 
         sidecar = source.with_name(source.stem + ".source.json")
@@ -134,7 +140,10 @@ def migrate_legacy_adas_map_reports(root: Path) -> dict[str, str]:
             side_target = _unique_json_target(
                 destination.with_name(destination.stem + ".source.json")
             )
-            shutil.move(str(sidecar), str(side_target))
+            try:
+                shutil.move(str(sidecar), str(side_target))
+            except FileNotFoundError:
+                pass
     return moved
 
 
