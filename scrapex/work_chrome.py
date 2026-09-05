@@ -14,6 +14,16 @@ def _compact_text(value: Any) -> str:
     return " ".join(str(value or "").split())
 
 
+def _verified_pdf_file(path: Path) -> bool:
+    try:
+        if not path.is_file() or path.stat().st_size < 256:
+            return False
+        with path.open("rb") as handle:
+            return handle.read(5) == b"%PDF-"
+    except OSError:
+        return False
+
+
 def _identity_key(value: Any) -> str:
     return "".join(ch for ch in _compact_text(value).casefold() if ch.isalnum())
 
@@ -680,6 +690,10 @@ class WorkChromeAdasMapSource:
 
         report_links: list[str] = []
         report_error: str | None = None
+        report_capture_required = self.adas_si_root is not None
+        report_capture_verified = not report_capture_required
+        local_report_path: str | None = None
+        local_report_relative_path: str | None = None
 
         if self.adas_si_root is not None:
             # Hard storage rule: ADAS Map evidence is organized by RO, never
@@ -700,11 +714,18 @@ class WorkChromeAdasMapSource:
             download_closed_modal = modal_close.get("closed") is True
 
             if download_result.get("success") or download_status == "target_already_exists":
-                # target_already_exists means the report is already on disk
-                # from a prior run -- the local ADAS SI library already has
-                # it, which is the point (see the dedup rule: don't re-save
-                # what's already captured).
-                report_links = [str(save_path)]
+                if _verified_pdf_file(save_path):
+                    local_report_path = str(save_path)
+                    local_report_relative_path = str(
+                        save_path.relative_to(self.adas_si_root)
+                    ).replace("\\", "/")
+                    report_links = [local_report_path]
+                    report_capture_verified = True
+                else:
+                    report_error = (
+                        "ADAS Map reported a saved report, but the canonical PDF "
+                        "was not present as a valid file on disk."
+                    )
             else:
                 report_error = (
                     download_result.get("message")
@@ -753,6 +774,10 @@ class WorkChromeAdasMapSource:
             "alldata_links": alldata_links,
             "report_links": report_links,
             "report_error": report_error,
+            "report_capture_required": report_capture_required,
+            "report_capture_verified": report_capture_verified,
+            "local_report_path": local_report_path,
+            "local_report_relative_path": local_report_relative_path,
             "adas_map": {
                 "inspection_id": inspection_id,
                 "vehicle": vehicle,
@@ -762,6 +787,10 @@ class WorkChromeAdasMapSource:
                 "explicit_no_calibration": explicit_no_calibration,
                 "source_url": source_url,
                 "report_links": report_links,
+                "report_capture_required": report_capture_required,
+                "report_capture_verified": report_capture_verified,
+                "local_report_path": local_report_path,
+                "local_report_relative_path": local_report_relative_path,
                 "alldata_links": alldata_links,
             },
             "captured_at": datetime.now(UTC).isoformat(),

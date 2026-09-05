@@ -232,6 +232,26 @@ class AdasMapBatchRunner:
             )
             return
 
+        if (
+            result.get("report_capture_required") is True
+            and result.get("report_capture_verified") is not True
+        ):
+            self.store.checkpoint_adas_map(
+                item_id,
+                "needs_operator",
+                adas_map_attempts=attempts,
+                adas_map_url=result.get("details_url") or result.get("url"),
+                adas_map_source_url=result.get("source_url"),
+                adas_map_inspection_id=result.get("inspection_id"),
+                adas_map_last_error=(
+                    result.get("report_error")
+                    or "ADAS Map report was not saved to canonical storage."
+                ),
+                adas_map_raw_result_json=json.dumps(result, sort_keys=True, default=str),
+                adas_map_checked_at=checked_at,
+            )
+            return
+
         returned_ro = str(result.get("ro_number") or ro_number).strip()
         returned_ciq_id = str(result.get("ciq_ro_id") or "").strip()
         expected_ciq_id = str(item.get("ro_id") or "").strip()

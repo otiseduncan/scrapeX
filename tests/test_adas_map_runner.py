@@ -136,6 +136,38 @@ async def test_success_persists_every_map_checkpoint_and_verified_ciq(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_required_report_capture_must_be_verified_before_ciq_reconciliation(
+    tmp_path: Path,
+):
+    store = RecordingStore(tmp_path / "db.sqlite")
+    batch_id = _batch(store)
+    item = store.batch(batch_id)["items"][0]
+    ciq = FakeCIQ()
+    source = FakeSource()
+
+    async def missing_report_lookup(ro_number, shop, expected):
+        result = _success(ro_number)
+        result.update(
+            {
+                "report_capture_required": True,
+                "report_capture_verified": False,
+                "report_error": "Canonical ADAS Map PDF was not saved.",
+            }
+        )
+        return result
+
+    source.lookup = missing_report_lookup
+    runner = AdasMapBatchRunner(store, source, ciq)
+
+    await runner.process_one(item)
+
+    refreshed = store.batch(batch_id)["items"][0]
+    assert refreshed["adas_map_state"] == "needs_operator"
+    assert "not saved" in refreshed["adas_map_last_error"]
+    assert ciq.calls == []
+
+
+@pytest.mark.asyncio
 async def test_unexpected_failure_on_one_ro_continues_to_the_next(
     tmp_path: Path, monkeypatch
 ):

@@ -133,6 +133,14 @@ class FakeBridge:
         inspection_id: str | None = None,
     ):
         self.download_calls.append((ro_number, save_path, inspection_id))
+        if (
+            self.download_result.get("success") is True
+            or self.download_result.get("status") == "target_already_exists"
+        ):
+            target = Path(save_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not target.exists():
+                target.write_bytes(b"%PDF-1.4\n" + (b"0" * 512))
         return self.download_result
 
 
@@ -625,6 +633,11 @@ async def test_report_download_can_close_modal_before_final_cleanup(tmp_path):
 
     assert result["success"] is True
     assert result["status"] == "complete"
+    assert result["report_capture_required"] is True
+    assert result["report_capture_verified"] is True
+    assert result["local_report_relative_path"] == (
+        "ADAS Map/9000000001/9000000001 ADAS Map.pdf"
+    )
     assert result["download_modal_close_verified"] is True
     assert result["detail_close"]["status"] == "details_not_open"
     assert bridge.close_calls == 1
@@ -637,6 +650,32 @@ async def test_report_download_can_close_modal_before_final_cleanup(tmp_path):
     ) or save_path.endswith(
         "ADAS Map/9000000001/9000000001 ADAS Map.pdf"
     )
+
+
+@pytest.mark.asyncio
+async def test_source_reports_unverified_capture_when_saved_pdf_is_missing(tmp_path):
+    bridge = FakeBridge(
+        proven_details(),
+        download_result={
+            "success": False,
+            "status": "save_failed",
+            "message": "Save dialog failed.",
+            "modal_close": {"closed": True},
+        },
+    )
+    source = WorkChromeAdasMapSource(bridge, adas_si_root=tmp_path)
+
+    result = await source.lookup(
+        "9000000001",
+        shop="Macon",
+        expected=expected_vehicle(),
+    )
+
+    assert result["success"] is True
+    assert result["report_capture_required"] is True
+    assert result["report_capture_verified"] is False
+    assert "Save dialog failed" in result["report_error"]
+    assert result["local_report_path"] is None
 
 
 @pytest.mark.asyncio
