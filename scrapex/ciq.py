@@ -662,21 +662,74 @@ class CIQClient:
             ]
             if len(exact) == 1:
                 return exact[0]
-            compatible = [
+            by_name = [
                 document
                 for document in self._research_documents(current)
                 if str(document.get("source_name") or "").strip().casefold()
                 == source_name.casefold()
-                and (
-                    str(document.get("semantic_type") or "").strip().casefold()
-                    == "adas_map_report"
-                    or str(document.get("document_type") or "").strip().casefold()
-                    == "adas_map_report"
-                )
+                or str(document.get("original_filename") or "").strip().casefold()
+                == source_name.casefold()
             ]
-            return compatible[0] if len(compatible) == 1 else None
+            return by_name[0] if len(by_name) == 1 else None
+
+        def is_adas_map_document(document: dict[str, Any]) -> bool:
+            return (
+                str(document.get("semantic_type") or "").strip().casefold()
+                == "adas_map_report"
+                and str(document.get("document_type") or "").strip().casefold()
+                == "adas_map_report"
+            )
 
         document = matching_document(snapshot)
+        if document is not None and not is_adas_map_document(document):
+            document_id = str(
+                document.get("id") or document.get("document_id") or ""
+            ).strip()
+            try:
+                document_version = int(document.get("version") or 0)
+            except (TypeError, ValueError):
+                document_version = 0
+            if not document_id or document_version < 1:
+                raise CIQReconciliationError(
+                    "The existing ADAS Map file cannot be safely reclassified in Calibration IQ."
+                )
+            retag_arguments = {
+                "changes": {
+                    "document_type": "adas_map_report",
+                    "semantic_type": "ADAS_MAP_REPORT",
+                    "status": "validated",
+                    "source_uri": source_uri,
+                    "source_name": source_name,
+                    "title": f"{ro_number} ADAS Map",
+                }
+            }
+            retag_identity = {
+                "reconciliation_contract_version": RECONCILIATION_CONTRACT_VERSION,
+                "operation": "update_document",
+                "repair_order_id": repair_order_id,
+                "target_id": document_id,
+                "expected_version": document_version,
+                "source_uri": source_uri,
+            }
+            response = await self._post_actions([
+                {
+                    "idempotency_key": self._idempotency(retag_identity),
+                    "correlation_id": correlation,
+                    "operation": "update_document",
+                    "repair_order_id": repair_order_id,
+                    "target_id": document_id,
+                    "expected_version": document_version,
+                    "arguments": retag_arguments,
+                }
+            ])
+            receipts.extend(list(response.get("receipts") or []))
+            snapshot = await self._snapshot(repair_order_id)
+            document = matching_document(snapshot)
+            if document is None or not is_adas_map_document(document):
+                raise CIQReconciliationError(
+                    "Calibration IQ did not verify the repaired ADAS Map classification.",
+                    result={"receipts": receipts},
+                )
         if document is None:
             digest = hashlib.sha256(report.read_bytes()).hexdigest()
             arguments = {
@@ -1284,6 +1337,28 @@ class CIQClient:
                     "CIQ authoritative reread did not verify ADAS Map vehicle identity.",
                     result={"unverified_vehicle_fields": unverified_vehicle, "receipts": receipts},
                 )
+
+        if not isinstance(adas_map_attachment, dict) or not adas_map_attachment.get("attached"):
+            raise CIQReconciliationError(
+                "CIQ reconciliation cannot complete without an attached ADAS Map PDF."
+            )
+        if (
+            str(adas_map_attachment.get("semantic_type") or "").strip().casefold()
+            != "adas_map_report"
+        ):
+            raise CIQReconciliationError(
+                "CIQ reconciliation cannot complete until the document is classified as ADAS_MAP_REPORT."
+            )
+        final_research = after.get("research")
+        final_research_state = (
+            str(final_research.get("state") or "").strip().casefold()
+            if isinstance(final_research, dict)
+            else ""
+        )
+        if final_research_state not in {"research_in_progress", "research_complete"}:
+            raise CIQReconciliationError(
+                "CIQ reconciliation cannot complete while research remains required."
+            )
 
         active_ids = {
             row["key"]: [str(item.get("id")) for item in active_by_key.get(row["key"], [])]
