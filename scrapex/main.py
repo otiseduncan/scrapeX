@@ -428,6 +428,28 @@ async def navigator_task_evidence(request: Request, task_id: str) -> dict[str, A
     return runner.evidence(task_id)
 
 
+@router.get("/api/navigator/tasks/{task_id}/screenshot")
+async def navigator_task_screenshot(request: Request, task_id: str) -> Response:
+    """Task-bound visual observation for X Omni's multimodal Navigator loop.
+
+    Unlike the provider-level screenshot used for human MFA/CAPTCHA handoff,
+    this image is tied to an existing task and annotated only with refs from
+    that task's latest cached accessibility observation.
+    """
+    services = _services(request)
+    runner, _ = _navigator_runner_for_task(services, task_id)
+    jpeg_bytes = await _navigator_call(lambda: runner.screenshot(task_id))
+    return Response(
+        content=jpeg_bytes,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "X-ScrapeX-Task-Id": task_id,
+        },
+    )
+
+
 @router.get("/api/navigator/providers/{provider}/current-target-signal")
 async def navigator_current_target_signal(
     request: Request,

@@ -207,6 +207,17 @@ def test_full_task_lifecycle_over_http(tmp_path: Path):
         assert evidence.json()["task_id"] == task_id
 
 
+def test_task_screenshot_requires_an_observation(tmp_path: Path):
+    services = make_services(tmp_path)
+    with TestClient(create_app(services)) as client:
+        task_id = client.post(
+            "/api/navigator/tasks",
+            json={"provider": "alldata", "target": {}, "topic": "topic"},
+        ).json()["task_id"]
+        response = client.get(f"/api/navigator/tasks/{task_id}/screenshot")
+    assert response.status_code == 409
+
+
 def test_act_with_unknown_ref_is_422(tmp_path: Path):
     services = make_services(tmp_path)
     with TestClient(create_app(services)) as client:

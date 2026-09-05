@@ -15,7 +15,12 @@ from typing import Any, Optional
 
 from .navigator_actions import ActionError, NavigatorActionExecutor
 from .navigator_graph import NavigationGraph
-from .navigator_observation import Observation, ObservationNode, build_observation
+from .navigator_observation import (
+    Observation,
+    ObservationNode,
+    annotated_viewport_screenshot,
+    build_observation,
+)
 from .navigator_providers import NavigatorProvider
 from .navigator_verification import evaluate_navigation_claim
 
@@ -105,6 +110,23 @@ class NavigatorTaskRunner:
         return public_observation(
             observation, loop_warning=step.loop_warning, backtrack_available=step.backtrack_available
         )
+
+    async def screenshot(self, task_id: str) -> bytes:
+        """Return a task-bound annotated still of the current browser viewport.
+
+        The cached observation supplies the only refs that may be drawn. Raw
+        pixels are not persisted in Navigator state and this method exposes no
+        cookies, credentials, or browser-profile material.
+        """
+        task = self._require_task(task_id)
+        observation = _observation_from_dict(task.get("last_observation"))
+        if observation is None:
+            raise NavigatorTaskError(
+                "no_prior_observation",
+                "Observe the Navigator task before requesting its screenshot.",
+            )
+        page = await self._page()
+        return await annotated_viewport_screenshot(page, observation)
 
     async def act(self, task_id: str, action: dict[str, Any]) -> dict[str, Any]:
         task = self._require_task(task_id)

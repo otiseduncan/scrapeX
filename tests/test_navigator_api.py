@@ -127,6 +127,19 @@ async def test_full_navigation_reaches_and_verifies_correct_leaf(runner: Navigat
 
 
 @pytest.mark.asyncio
+async def test_task_bound_visual_observation_is_a_jpeg(runner: NavigatorTaskRunner):
+    task_id = runner.create_task(
+        {"year": 2023, "make": "Toyota", "model": "Camry"},
+        "blind spot calibration",
+        action_budget=30,
+    )
+    await runner.observe(task_id)
+    image = await runner.screenshot(task_id)
+    assert image.startswith(b"\xff\xd8\xff")
+    assert len(image) > 100
+
+
+@pytest.mark.asyncio
 async def test_wrong_leaf_alone_never_verifies(runner: NavigatorTaskRunner):
     task_id = runner.create_task(
         {"year": 2023, "make": "Toyota", "model": "Camry"}, "blind spot calibration", action_budget=30
