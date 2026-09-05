@@ -71,6 +71,9 @@ def _success(ro_number: str) -> dict:
         ],
         "requirements_proven": True,
         "explicit_no_calibration": False,
+        "report_capture_required": True,
+        "report_capture_verified": True,
+        "local_report_path": f"/canonical/{ro_number} ADAS Map.pdf",
     }
 
 
@@ -83,6 +86,11 @@ class FakeCIQ:
         return {
             "verified": True,
             "snapshot_verified": True,
+            "adas_map_attachment": {
+                "attached": True,
+                "document_id": "doc-adas-map",
+                "semantic_type": "ADAS_MAP_REPORT",
+            },
             "requirements": [{"key": "seat_belt", "label": "Seat Belt"}],
             "active_calibration_item_ids": {"seat_belt": ["cal-seat"]},
         }
@@ -164,6 +172,33 @@ async def test_required_report_capture_must_be_verified_before_ciq_reconciliatio
     refreshed = store.batch(batch_id)["items"][0]
     assert refreshed["adas_map_state"] == "needs_operator"
     assert "not saved" in refreshed["adas_map_last_error"]
+    assert ciq.calls == []
+
+
+@pytest.mark.asyncio
+async def test_verified_requirements_without_pdf_path_never_complete(
+    tmp_path: Path,
+):
+    store = RecordingStore(tmp_path / "db.sqlite")
+    batch_id = _batch(store)
+    item = store.batch(batch_id)["items"][0]
+    ciq = FakeCIQ()
+    source = FakeSource()
+
+    async def no_path_lookup(ro_number, shop, expected):
+        result = _success(ro_number)
+        result["local_report_path"] = None
+        return result
+
+    source.lookup = no_path_lookup
+    await AdasMapBatchRunner(store, source, ciq).process_one(item)
+
+    refreshed = store.batch(batch_id)["items"][0]
+    assert refreshed["adas_map_state"] == "needs_operator"
+    assert "canonical PDF path" in refreshed["adas_map_last_error"]
+    assert refreshed["ciq_reconciliation_state"] != "complete"
+    assert refreshed["ciq_adas_map_verified"] == 0
+    assert store.pipeline_summary(batch_id)["ready"] == 0
     assert ciq.calls == []
 
 
