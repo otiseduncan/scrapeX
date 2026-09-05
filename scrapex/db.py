@@ -217,6 +217,7 @@ class Store:
                             AND i.adas_map_state='adas_map_complete'
                             AND i.adas_map_requirements_proven=1
                             AND i.ciq_reconciliation_state='complete'
+                            AND i.ciq_adas_map_verified=1
                            THEN 1 ELSE 0 END) complete_count,
                   SUM(CASE WHEN i.adas_map_contract_version=?
                             AND i.adas_map_state IN
