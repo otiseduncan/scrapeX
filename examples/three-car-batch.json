@@ -1,0 +1,9 @@
+{
+  "name": "ScrapeX 3-RO staged acceptance",
+  "ro_numbers": [
+    "REPLACE-WITH-EXACT-CIQ-RO-1",
+    "REPLACE-WITH-EXACT-CIQ-RO-2",
+    "REPLACE-WITH-EXACT-CIQ-RO-3"
+  ],
+  "source_scope": "all"
+}

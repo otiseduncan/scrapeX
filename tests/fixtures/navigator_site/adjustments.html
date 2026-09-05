@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Fixture Portal - Adjustments</title></head>
+<body>
+  <div data-selected="true" id="vehicle-context">2023 Toyota Camry</div>
+  <h1>Adjustments</h1>
+  <button id="show-more" onclick="loadSubcategories()">Show more</button>
+  <ul id="subcategories"></ul>
+  <script>
+    function loadSubcategories() {
+      // Simulates a lazy-loaded submenu: nothing exists in the DOM until
+      // this fires, so the Navigator must re-observe after the click
+      // rather than assuming the page is static.
+      setTimeout(function () {
+        var ul = document.getElementById('subcategories');
+        var li = document.createElement('li');
+        var link = document.createElement('a');
+        link.href = 'leaf-frame.html';
+        link.textContent = 'Beam Axis Adjustment';
+        link.setAttribute('role', 'link');
+        li.appendChild(link);
+        ul.appendChild(li);
+      }, 150);
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Fixture Portal - Vehicle Select</title></head>
+<body>
+  <h1>Vehicle Select</h1>
+  <input id="search-box" type="text" aria-label="Vehicle search" />
+  <button id="search-btn" onclick="doSearch()">Search</button>
+  <ul id="results"></ul>
+  <div id="selected-vehicle" data-selected="false"></div>
+  <p id="continue-wrap" hidden>
+    <a id="continue-link" href="nav-a.html" role="link">Continue to Systems</a>
+  </p>
+  <script>
+    function doSearch() {
+      var results = document.getElementById('results');
+      results.innerHTML = '';
+      var li = document.createElement('li');
+      var link = document.createElement('a');
+      link.href = '#';
+      link.textContent = '2023 Toyota Camry';
+      link.setAttribute('role', 'link');
+      link.onclick = function (e) {
+        e.preventDefault();
+        selectVehicle();
+      };
+      li.appendChild(link);
+      results.appendChild(li);
+    }
+    function selectVehicle() {
+      var marker = document.getElementById('selected-vehicle');
+      marker.setAttribute('data-selected', 'true');
+      marker.textContent = 'Selected: 2023 Toyota Camry';
+      document.getElementById('continue-wrap').hidden = false;
+    }
+  </script>
+</body>
+</html>
