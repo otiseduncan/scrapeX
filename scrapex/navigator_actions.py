@@ -17,7 +17,7 @@ from typing import Any, Optional
 from .navigator_observation import Observation
 from .navigator_providers import NavigatorProvider, domain_allowed
 
-VALID_ACTIONS = frozenset({"click", "fill", "press", "back", "open", "extract", "done"})
+VALID_ACTIONS = frozenset({"click", "fill", "press", "back", "open", "scroll", "wait", "extract", "done"})
 
 # Some sites populate content asynchronously after a click/keypress (a
 # lazy-loaded submenu, a client-side search results render) with no
@@ -84,9 +84,35 @@ class NavigatorActionExecutor:
 
         if kind == "back":
             await page.go_back(wait_until="domcontentloaded")
+            await page.wait_for_timeout(_DOM_SETTLE_MS)
             return ActionResult(action=kind, ref=None, executed=True, is_search_action=False)
 
         if kind == "extract":
+            return ActionResult(action=kind, ref=None, executed=True, is_search_action=False)
+
+        if kind == "scroll":
+            raw_delta = action.get("delta_y", 800)
+            if isinstance(raw_delta, bool):
+                raise ActionError("invalid_arguments", "'scroll' requires integer 'delta_y'.")
+            try:
+                delta_y = int(raw_delta)
+            except (TypeError, ValueError) as exc:
+                raise ActionError("invalid_arguments", "'scroll' requires integer 'delta_y'.") from exc
+            delta_y = max(-1600, min(1600, delta_y))
+            await page.mouse.wheel(0, delta_y)
+            await page.wait_for_timeout(_DOM_SETTLE_MS)
+            return ActionResult(action=kind, ref=None, executed=True, is_search_action=False)
+
+        if kind == "wait":
+            raw_ms = action.get("milliseconds", 700)
+            if isinstance(raw_ms, bool):
+                raise ActionError("invalid_arguments", "'wait' requires integer 'milliseconds'.")
+            try:
+                milliseconds = int(raw_ms)
+            except (TypeError, ValueError) as exc:
+                raise ActionError("invalid_arguments", "'wait' requires integer 'milliseconds'.") from exc
+            milliseconds = max(100, min(2500, milliseconds))
+            await page.wait_for_timeout(milliseconds)
             return ActionResult(action=kind, ref=None, executed=True, is_search_action=False)
 
         if kind == "open":
