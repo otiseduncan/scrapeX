@@ -1,4 +1,4 @@
-# ScrapeX 0.5.0 tested dependency constraints.
+# ScrapeX 0.6.0 tested dependency constraints.
 # Generated from the verified Windows/Python 3.14 environment on 2026-08-22.
 # Keep pyproject.toml as the declaration of supported ranges; this file makes
 # local install/repair resolution repeatable within those ranges.
