@@ -34,8 +34,8 @@ def test_release_metadata_and_documentation_are_coherent() -> None:
     project = _project()["project"]
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert project["version"] == scrapex.__version__ == "0.5.0"
-    assert readme.startswith("# ScrapeX v0.5.0\n")
+    assert project["version"] == scrapex.__version__ == "0.6.0"
+    assert readme.startswith("# ScrapeX v0.6.0\n")
     for term in ("calibration iq", "adas map", "work chrome"):
         assert term in project["description"].casefold()
         assert term in readme.casefold()
