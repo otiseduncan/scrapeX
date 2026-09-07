@@ -64,6 +64,8 @@ class NavigatorActionRequest(BaseModel):
     text: str | None = None
     key: str | None = None
     url: str | None = None
+    delta_y: int | None = Field(default=None, ge=-1600, le=1600)
+    milliseconds: int | None = Field(default=None, ge=100, le=2500)
 
 
 class NavigatorRemoteInput(BaseModel):
