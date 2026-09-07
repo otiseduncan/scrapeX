@@ -195,7 +195,14 @@ def test_full_task_lifecycle_over_http(tmp_path: Path):
         observed = client.post(f"/api/navigator/tasks/{task_id}/observe")
         assert observed.status_code == 200
         elements = observed.json()["elements"]
-        assert {"ref": "e1", "role": "textbox", "name": "Vehicle search", "expanded": None} in elements
+        assert {
+            "ref": "e1",
+            "role": "textbox",
+            "name": "Vehicle search",
+            "depth": 0,
+            "expanded": None,
+        } in elements
+        assert "2023 Toyota Camry" in observed.json()["page_text"]
         search_box_ref = next(e["ref"] for e in elements if e["role"] == "textbox")
 
         acted = client.post(
