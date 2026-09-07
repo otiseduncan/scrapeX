@@ -1,4 +1,4 @@
-# ScrapeX v0.5.0
+# ScrapeX v0.6.0
 
 ScrapeX is a standalone browser/evidence worker with two deliberately separate session paths:
 
@@ -28,9 +28,16 @@ different authenticated browser contexts.
 - One failed RO is checkpointed for operator attention while the sequential batch continues.
 
 - ALLDATA/SI research runs through the task-based Navigator with a persistent provider
-  profile, accessibility/DOM observations, task-bound annotated screenshots for X Omni's
-  multimodal model, opaque element refs, backtracking/loop state, and deterministic
-  post-navigation verification.
+  profile. ScrapeX exposes bounded page text, accessibility/DOM hierarchy, task-bound
+  annotated screenshots, opaque element refs, scroll/wait primitives, and backtracking/
+  loop state to X Omni's model.
+- X reasons from the live page after every action instead of following a fixed menu path.
+  Each proposed procedure leaf is verified immediately against vehicle, subject,
+  procedure-leaf, and extracted-content gates. A rejected leaf is returned to X with
+  the failed gates so it can backtrack and try another route.
+- Verification recognizes common OEM-equivalent ADAS terminology (for example
+  calibration/aiming/alignment/adjustment/initialization and system aliases) without
+  converting navigation into deterministic title matching.
 - Credentials remain outside model context. The Navigator operates the authenticated
   browser session and exposes page state, not stored secrets.
 - The old ALLDATA batch runner remains retired/frozen; it is not the live SI path.
