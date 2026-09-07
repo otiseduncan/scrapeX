@@ -231,3 +231,195 @@ async def test_current_page_signals_is_empty_when_nothing_is_found():
     page = _FakePage("")
     signals = await provider.current_page_signals(page)
     assert signals == []
+
+
+class _LoginElement:
+    def __init__(self, page, kind: str):
+        self.page = page
+        self.kind = kind
+        self.first = self
+
+    async def is_visible(self, timeout=None):
+        if self.kind == "username":
+            return self.page.stage == "login"
+        if self.kind == "password":
+            return self.page.stage == "login"
+        if self.kind == "submit":
+            return self.page.stage == "login"
+        if self.kind == "challenge":
+            return self.page.stage == "challenge"
+        return False
+
+    async def count(self):
+        return 1 if await self.is_visible() else 0
+
+    async def fill(self, value):
+        if self.kind == "username":
+            self.page.username = value
+        elif self.kind == "password":
+            self.page.password = value
+        else:
+            raise AssertionError(f"cannot fill {self.kind}")
+
+    async def click(self):
+        if self.kind != "submit":
+            raise AssertionError(f"cannot click {self.kind}")
+        self.page.submit()
+
+    async def press(self, key):
+        if key != "Enter":
+            raise AssertionError(key)
+        self.page.submit()
+
+
+class _CredentialLoginPage:
+    def __init__(self, *, challenge=False, authenticated=False):
+        self.stage = "authenticated" if authenticated else "login"
+        self.challenge_after_submit = challenge
+        self.username = ""
+        self.password = ""
+
+    @property
+    def url(self):
+        if self.stage == "authenticated":
+            return "https://my.alldata.com/repair/"
+        if self.stage == "challenge":
+            return "https://my.alldata.com/challenge"
+        return "https://my.alldata.com/login"
+
+    def locator(self, selector):
+        lowered = selector.casefold()
+        if "one-time-code" in lowered or "otp" in lowered or "verification" in lowered or "captcha" in lowered:
+            return _LoginElement(self, "challenge")
+        if "password" in lowered:
+            return _LoginElement(self, "password")
+        if "button[type='submit']" in lowered or "input[type='submit']" in lowered:
+            return _LoginElement(self, "submit")
+        if (
+            "type='email'" in lowered
+            or "name*='user'" in lowered
+            or "id*='user'" in lowered
+            or "name*='email'" in lowered
+            or "id*='email'" in lowered
+            or "type='text'" in lowered
+        ):
+            return _LoginElement(self, "username")
+        return _EmptyLocs()
+
+    def get_by_text(self, pattern, exact=None):
+        text = getattr(pattern, "pattern", str(pattern)).casefold()
+        if self.stage == "login" and ("log" in text or "sign" in text):
+            return _LoginElement(self, "submit")
+        if self.stage == "challenge" and (
+            "verification" in text or "factor" in text or "captcha" in text or "identity" in text
+        ):
+            return _LoginElement(self, "challenge")
+        return _InvisibleLoc()
+
+    async def title(self):
+        if self.stage == "authenticated":
+            return "ALLDATA Collision - Home"
+        if self.stage == "challenge":
+            return "Verify Identity - ALLDATA"
+        return "ALLDATA"
+
+    async def wait_for_timeout(self, _milliseconds):
+        return None
+
+    async def wait_for_load_state(self, _state, timeout=None):
+        return None
+
+    def submit(self):
+        self.stage = "challenge" if self.challenge_after_submit else "authenticated"
+
+
+@pytest.mark.asyncio
+async def test_saved_xomni_credential_logs_navigator_in_before_observation(monkeypatch):
+    import scrapex.alldata_navigator as mod
+
+    secret = "never-return-this-password"
+    monkeypatch.setattr(
+        mod,
+        "read_alldata_credential",
+        lambda: ("otis@example.com", secret),
+    )
+    provider = mod.AlldataNavigatorProvider("https://my.alldata.com/")
+    page = _CredentialLoginPage()
+
+    result = await provider.ensure_authenticated(page)
+
+    assert result == {
+        "authenticated": True,
+        "credential_configured": True,
+        "saved_login_attempted": True,
+        "interactive_auth_required": False,
+        "message": None,
+    }
+    assert page.username == "otis@example.com"
+    assert page.password == secret
+    assert secret not in repr(result)
+    assert "otis@example.com" not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_saved_credential_does_not_bypass_mfa_or_expose_secret(monkeypatch):
+    import scrapex.alldata_navigator as mod
+
+    secret = "never-return-this-password"
+    monkeypatch.setattr(
+        mod,
+        "read_alldata_credential",
+        lambda: ("otis@example.com", secret),
+    )
+    provider = mod.AlldataNavigatorProvider("https://my.alldata.com/")
+    page = _CredentialLoginPage(challenge=True)
+
+    result = await provider.ensure_authenticated(page)
+
+    assert result["authenticated"] is False
+    assert result["credential_configured"] is True
+    assert result["saved_login_attempted"] is True
+    assert result["interactive_auth_required"] is True
+    assert "interactive authentication" in result["message"].casefold()
+    assert secret not in repr(result)
+    assert "otis@example.com" not in repr(result)
+    assert await provider.authenticated(page) is False
+
+
+@pytest.mark.asyncio
+async def test_already_authenticated_navigator_never_reads_saved_password(monkeypatch):
+    import scrapex.alldata_navigator as mod
+
+    def should_not_read():
+        raise AssertionError("credential should not be read for an authenticated profile")
+
+    monkeypatch.setattr(mod, "read_alldata_credential", should_not_read)
+    provider = mod.AlldataNavigatorProvider("https://my.alldata.com/")
+    page = _CredentialLoginPage(authenticated=True)
+
+    result = await provider.ensure_authenticated(page)
+
+    assert result["authenticated"] is True
+    assert result["saved_login_attempted"] is False
+
+
+@pytest.mark.asyncio
+async def test_signed_out_navigator_without_saved_credential_requests_human_auth(monkeypatch):
+    import scrapex.alldata_navigator as mod
+
+    monkeypatch.setattr(mod, "read_alldata_credential", lambda: None)
+    provider = mod.AlldataNavigatorProvider("https://my.alldata.com/")
+    page = _CredentialLoginPage()
+
+    result = await provider.ensure_authenticated(page)
+
+    assert result["authenticated"] is False
+    assert result["credential_configured"] is False
+    assert result["interactive_auth_required"] is True
+    assert "windows credential manager" in result["message"].casefold()
+
+
+def test_scrapex_reads_the_same_alldata_credential_target_as_xomni():
+    from scrapex.windows_credentials import ALLDATA_CREDENTIAL_TARGET
+
+    assert ALLDATA_CREDENTIAL_TARGET == "XOmni/ResearchProvider/ALLDATA"
