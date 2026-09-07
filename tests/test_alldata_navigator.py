@@ -185,6 +185,28 @@ def test_match_terms_ignores_stopwords_and_short_tokens():
     assert score == len(matched)
 
 
+def test_match_terms_accepts_semantic_oem_aliases():
+    provider = AlldataNavigatorProvider("https://my.alldata.com/")
+    matched, score = provider.match_terms(
+        "Lane Change Assist Rear Side Radar Beam Axis Adjustment for 2023 Toyota Camry",
+        "blind spot monitor calibration",
+    )
+    assert "system:blind_spot" in matched
+    assert "operation:calibration" in matched
+    assert score >= 2
+
+
+def test_match_terms_accepts_front_radar_adjustment_for_calibration_request():
+    provider = AlldataNavigatorProvider("https://my.alldata.com/")
+    matched, score = provider.match_terms(
+        "Adaptive Cruise Control Cruise Control Module Aiming Adjustment",
+        "front radar calibration",
+    )
+    assert "system:front_radar" in matched
+    assert "operation:calibration" in matched
+    assert score >= 2
+
+
 def test_match_terms_finds_nothing_on_an_unrelated_page():
     provider = AlldataNavigatorProvider("https://my.alldata.com/")
     matched, score = provider.match_terms(
