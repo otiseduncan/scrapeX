@@ -14,6 +14,7 @@ from typing import Any
 from . import alldata as alldata_heuristics
 from .models import VehicleSpec
 from .navigator_observation import build_observation
+from .provider_credentials import ALLDATA_CREDENTIALS, CredentialUnavailable
 
 _STOPWORDS = frozenset({
     "the", "and", "for", "with", "this", "that", "from", "into", "your",
@@ -136,6 +137,129 @@ class AlldataNavigatorProvider:
         except Exception:
             return False
         return "login" not in title and "sign in" not in title
+
+    async def ensure_authenticated(self, page: Any) -> dict[str, Any]:
+        """Bring the profile to a signed-in state, or report a human blocker.
+
+        The persistent profile is usually already authenticated, in which case
+        this is a cheap check. When it is not, the Navigator used to simply
+        hand the model whatever was on screen -- which is the ALLDATA *login
+        page*, semantically indistinguishable to a reasoning model from "this
+        procedure does not exist here". Signing in with the credential Otis
+        already saved keeps that from becoming a dead end.
+
+        Never bypasses a human gate: MFA, CAPTCHA, and any provider challenge
+        that survives the fill leave the browser open and return a blocker for
+        a person to finish. The returned dict is API/model-facing and so
+        carries booleans and reasons only, never the secret.
+        """
+        if await self.authenticated(page):
+            return {"authenticated": True, "method": "existing_session"}
+
+        try:
+            credential = ALLDATA_CREDENTIALS.read()
+        except CredentialUnavailable as exc:
+            return {
+                "authenticated": False,
+                "method": "vault_unavailable",
+                "requires_human": True,
+                "reason": str(exc),
+            }
+        if credential is None:
+            return {
+                "authenticated": False,
+                "method": "credential_missing",
+                "requires_human": True,
+                "reason": (
+                    "No saved ALLDATA credential. Save one in X Omni's ALLDATA "
+                    "setup card, then retry."
+                ),
+            }
+
+        filled = await self._submit_saved_login(page, credential)
+        if not filled:
+            return {
+                "authenticated": False,
+                "method": "login_form_not_found",
+                "requires_human": True,
+                "reason": (
+                    "ALLDATA is not signed in and no login form was present to "
+                    "complete automatically."
+                ),
+            }
+
+        # Re-check rather than trusting the submit. A wrong password, an MFA
+        # step, or a CAPTCHA all look like a successful click.
+        if await self.authenticated(page):
+            return {"authenticated": True, "method": "saved_credential"}
+        return {
+            "authenticated": False,
+            "method": "challenge_pending",
+            "requires_human": True,
+            "reason": (
+                "ALLDATA did not complete sign-in with the saved credential. A "
+                "provider challenge (MFA, CAPTCHA, or a rejected credential) "
+                "must be completed by a person in the visible Navigator browser."
+            ),
+        }
+
+    async def _submit_saved_login(
+        self, page: Any, credential: tuple[str, str]
+    ) -> bool:
+        """Fill and submit the login form. Returns whether it was attempted.
+
+        Selectors are deliberately generic. ALLDATA has changed its sign-in UI
+        before, and role/type survive that better than a CSS class does.
+        """
+        username, password = credential
+        try:
+            password_box = page.locator("input[type='password']").first
+            try:
+                if not await password_box.is_visible(timeout=3_000):
+                    return False
+            except Exception:
+                return False
+
+            username_box = None
+            for selector in (
+                "input[type='email']",
+                "input[name*='user' i]",
+                "input[id*='user' i]",
+                "input[name*='email' i]",
+                "input[id*='email' i]",
+                "input[type='text']",
+            ):
+                candidate = page.locator(selector).first
+                try:
+                    if await candidate.is_visible(timeout=500):
+                        username_box = candidate
+                        break
+                except Exception:
+                    continue
+
+            if username_box is not None:
+                await username_box.fill(username)
+            await password_box.fill(password)
+
+            submit = page.locator("button[type='submit'], input[type='submit']").first
+            try:
+                if await submit.count():
+                    await submit.click()
+                else:
+                    await password_box.press("Enter")
+            except Exception:
+                await password_box.press("Enter")
+
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=15_000)
+            except Exception:
+                pass
+            return True
+        finally:
+            # Drop local references promptly; nothing here is returned or stored.
+            username = ""
+            password = ""
+            credential = ("", "")
 
     async def target_signal(self, page: Any, target: dict[str, Any]) -> dict[str, Any]:
         vehicle = VehicleSpec(

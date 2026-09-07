@@ -20,6 +20,20 @@ class NavigatorProvider(Protocol):
         """Best-effort check that the persistent profile is still logged in."""
         ...
 
+    async def ensure_authenticated(self, page: Any) -> dict[str, Any]:
+        """Optional. Reach a signed-in state, or describe the human blocker.
+
+        Must return ``{"authenticated": bool, ...}``. When False, include a
+        ``reason`` a person can act on. Implementations may sign in from a
+        credential the host already stores, but must never bypass MFA, a
+        CAPTCHA, or any other provider challenge, and must never place secret
+        material in the returned dict -- it reaches the API and the model.
+
+        Providers that omit this are treated as always-permitted by the
+        Navigator, preserving the previous behavior.
+        """
+        ...
+
     async def target_signal(self, page: Any, target: dict[str, Any]) -> dict[str, Any]:
         """Bounded UI signal for whether ``target`` (e.g. a vehicle) is selected.
 

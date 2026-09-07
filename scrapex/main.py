@@ -267,6 +267,9 @@ _NAVIGATOR_ERROR_STATUS = {
     "invalid_arguments": 422,
     "domain_not_allowed": 422,
     "unknown_ref": 422,
+    # 409 is also the unmapped default, but an authentication blocker is the
+    # one a caller branches on, so state it rather than leave it implicit.
+    "authentication_required": 409,
 }
 
 

@@ -121,6 +121,33 @@ class NavigatorTaskRunner:
     async def _page(self) -> Any:
         return await self.browser_manager.page_for(self.provider.slug, home_url=self.provider.home_url)
 
+    async def _authenticated_page(self) -> Any:
+        """Return a page only once the provider session is actually signed in.
+
+        An unauthenticated provider page is a login screen, and a login screen
+        is not evidence: handed to the model as an ordinary observation it
+        reads as "the procedure is not here", which is how a licensed source
+        silently turns into a false negative. Fail closed instead, and let the
+        provider sign itself in from the saved credential when it can.
+
+        The error surfaces as HTTP 409 authentication_required (unmapped codes
+        default to 409), which is what the caller distinguishes an
+        authentication blocker by. No credential material is included.
+        """
+        page = await self._page()
+        ensure = getattr(self.provider, "ensure_authenticated", None)
+        if ensure is None:
+            return page
+        result = await ensure(page)
+        if result.get("authenticated"):
+            return page
+        raise NavigatorTaskError(
+            "authentication_required",
+            f"{self.provider.slug} requires interactive authentication before "
+            f"the Navigator can observe or act. "
+            f"{result.get('reason') or ''}".strip(),
+        )
+
     def create_task(self, target: dict[str, Any], topic: str, action_budget: Optional[int] = None) -> str:
         budget = min(MAX_ACTION_BUDGET, max(1, int(action_budget or DEFAULT_ACTION_BUDGET)))
         return self.store.create_navigator_task(self.provider.slug, target, topic, budget)
@@ -129,7 +156,7 @@ class NavigatorTaskRunner:
         task = self._require_task(task_id)
         if task["state"] in TERMINAL_STATES:
             raise NavigatorTaskError("task_terminal", f"Task is already {task['state']}.")
-        page = await self._page()
+        page = await self._authenticated_page()
         observation = await build_observation(page, breadcrumb=task.get("target", {}).get("breadcrumb"))
         graph = NavigationGraph.from_dict(task["graph"])
         step = graph.record(observation, action=None)
@@ -165,7 +192,7 @@ class NavigatorTaskRunner:
             raise NavigatorTaskError("action_budget_exhausted", "This task's action budget is exhausted.")
 
         last_observation = _observation_from_dict(task.get("last_observation"))
-        page = await self._page()
+        page = await self._authenticated_page()
         try:
             result = await self.executor.execute(page, last_observation, action)
         except ActionError as exc:
