@@ -179,11 +179,38 @@ class AlldataNavigatorProvider:
                 return False
         except Exception:
             pass
+        for selector in (
+            "input[autocomplete='one-time-code']",
+            "input[name*='otp' i]",
+            "input[id*='otp' i]",
+            "input[name*='verification' i]",
+            "iframe[src*='captcha' i]",
+            "[class*='captcha' i]",
+        ):
+            try:
+                if await page.locator(selector).first.is_visible(timeout=250):
+                    return False
+            except Exception:
+                continue
+        try:
+            challenge = page.get_by_text(
+                re.compile(
+                    r"\b(?:verification\s+code|two[-\s]?factor|multi[-\s]?factor|"
+                    r"security\s+code|verify\s+(?:your\s+)?identity|captcha)\b",
+                    re.I,
+                )
+            ).first
+            if await challenge.is_visible(timeout=300):
+                return False
+        except Exception:
+            pass
         try:
             title = (await page.title() or "").casefold()
+            url = str(getattr(page, "url", "") or "").casefold()
         except Exception:
             return False
-        return "login" not in title and "sign in" not in title
+        blocked_markers = ("login", "sign in", "signin", "challenge", "captcha", "/mfa", "verify")
+        return not any(marker in title or marker in url for marker in blocked_markers)
 
     async def ensure_authenticated(self, page: Any) -> dict[str, Any]:
         """Authenticate the provider internally before any model observation.
