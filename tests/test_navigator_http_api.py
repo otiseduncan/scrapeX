@@ -343,3 +343,29 @@ def test_capture_requires_verified_task(tmp_path: Path):
         client.post(f"/api/navigator/tasks/{task_id}/observe")
         response = client.post(f"/api/navigator/tasks/{task_id}/capture")
     assert response.status_code == 409
+
+
+def test_observe_returns_409_when_provider_authentication_is_required(tmp_path: Path):
+    class SignedOutProvider(FakeProvider):
+        async def ensure_authenticated(self, page):
+            return {
+                "authenticated": False,
+                "interactive_auth_required": True,
+                "message": "ALLDATA requires interactive authentication.",
+            }
+
+    services = make_services(tmp_path)
+    services.navigator_providers["alldata"] = SignedOutProvider()
+    with TestClient(create_app(services)) as client:
+        task_id = client.post(
+            "/api/navigator/tasks",
+            json={
+                "provider": "alldata",
+                "target": {"year": 2024, "make": "Hyundai", "model": "Santa Fe"},
+                "topic": "front radar calibration",
+            },
+        ).json()["task_id"]
+        response = client.post(f"/api/navigator/tasks/{task_id}/observe")
+
+    assert response.status_code == 409
+    assert "ALLDATA requires interactive authentication" in response.json()["detail"]
