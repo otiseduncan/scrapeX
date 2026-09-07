@@ -68,13 +68,26 @@ def _observation_from_dict(data: Optional[dict[str, Any]]) -> Optional[Observati
 
 
 def public_observation(observation: Observation, *, loop_warning=None, backtrack_available=False) -> dict[str, Any]:
-    """Model-facing view of an Observation, bounded to what the caller needs to act."""
+    """Model-facing view of an Observation, bounded to what the caller needs to reason and act.
+
+    The accessibility element map is the action authority, while bounded page
+    text and element depth give the reasoning model enough semantic/contextual
+    information to understand arbitrary provider drill-downs instead of
+    guessing from button labels alone.
+    """
     return {
         "url": observation.url,
         "title": observation.title,
         "breadcrumb": list(observation.breadcrumb),
+        "page_text": observation.page_text,
         "elements": [
-            {"ref": el.ref, "role": el.role, "name": el.name, "expanded": el.expanded}
+            {
+                "ref": el.ref,
+                "role": el.role,
+                "name": el.name,
+                "depth": el.depth,
+                "expanded": el.expanded,
+            }
             for el in observation.elements
         ],
         "loop_warning": loop_warning,
@@ -194,8 +207,25 @@ class NavigatorTaskRunner:
         target_state = await self.provider.target_signal(page, task["target"])
 
         steps = self.store.navigator_task_steps(task_id)
-        query_submitted = any(self.provider.is_search_action(s["action"]) for s in steps)
-        is_procedure_leaf = bool(steps) and steps[-1]["action"].get("action") == "extract"
+        # Dynamic service-information sites are often reached entirely through
+        # menu/tree navigation. Requiring a typed search made valid ALLDATA
+        # drill-downs unverifiable, so any real target-scoped navigation
+        # action counts while passive observe/wait/scroll/extract/done do not.
+        query_submitted = any(
+            self.provider.is_search_action(step["action"])
+            or str(step["action"].get("action") or "") in {"click", "open"}
+            for step in steps
+        )
+
+        # Extract marks the candidate evidence leaf. A subsequent done action
+        # is a control-loop signal, not browser navigation, and must not erase
+        # that evidence marker before verification.
+        substantive_actions = [
+            str(step["action"].get("action") or "")
+            for step in steps
+            if str(step["action"].get("action") or "") not in {"done", "wait"}
+        ]
+        is_procedure_leaf = bool(substantive_actions) and substantive_actions[-1] == "extract"
 
         matched_terms, relevance_score = self.provider.match_terms(observation.page_text, task["topic"])
 
