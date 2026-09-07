@@ -20,6 +20,73 @@ _STOPWORDS = frozenset({
     "procedure", "calibration", "system",
 })
 
+# Provider terminology varies by OEM and even by article family. These
+# semantic groups are verification aliases, not routing rules: the model
+# still decides where to navigate from the live page. They simply let the
+# deterministic evidence gate recognize that e.g. "Beam Axis Adjustment"
+# can satisfy a request phrased as "calibration".
+_CONCEPT_GROUPS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "operation:calibration",
+        re.compile(
+            r"\b(?:calibrat\w*|recalibrat\w*|aim\w*|align\w*|adjust\w*|"
+            r"initializ\w*|relearn\w*|reset\w*|set\s*up|setup|learn\w*|"
+            r"register\w*|zero[-\s]?point|memor(?:ize|ization)\w*)\b",
+            re.I,
+        ),
+    ),
+    (
+        "system:blind_spot",
+        re.compile(
+            r"\b(?:blind\s*spot|bsm|bsd|rear\s*(?:corner|side)\s*radar|"
+            r"side\s*radar|lane\s*change\s*assist|cross\s*traffic)\b",
+            re.I,
+        ),
+    ),
+    (
+        "system:front_radar",
+        re.compile(
+            r"\b(?:front|forward|millimeter\s*wave)\s*radar\b|"
+            r"\b(?:distance\s*sensor|adaptive\s*cruise|cruise\s*control\s*module|ccm)\b",
+            re.I,
+        ),
+    ),
+    (
+        "system:forward_camera",
+        re.compile(
+            r"\b(?:forward|front|windshield|monocular|recognition)\s*(?:facing\s*)?camera\b|"
+            r"\b(?:lane\s*(?:keep|keeping|departure)|image\s*processing\s*module|ipma)\b",
+            re.I,
+        ),
+    ),
+    (
+        "system:rear_camera",
+        re.compile(
+            r"\b(?:rear|backup|back|surround|around\s*view|360|parking\s*assist)\s*(?:view\s*)?camera\b",
+            re.I,
+        ),
+    ),
+    (
+        "system:steering_angle",
+        re.compile(r"\b(?:steering\s*(?:angle|center)|sas|neutral\s*point)\b", re.I),
+    ),
+    (
+        "system:occupant",
+        re.compile(
+            r"\b(?:occupant\s*classification|ocs|passenger\s*presence|seat\s*weight|weight\s*sensor)\b",
+            re.I,
+        ),
+    ),
+    (
+        "system:parking_sensor",
+        re.compile(r"\b(?:parking\s*aid|park\s*assist|ultrasonic|sonar|parking\s*sensor)\b", re.I),
+    ),
+    (
+        "system:lidar",
+        re.compile(r"\b(?:lidar|laser\s*(?:radar|sensor))\b", re.I),
+    ),
+)
+
 
 async def _aria_signal_candidates(page: Any) -> list[str]:
     """Fallback candidate source using the same aria-snapshot mechanism the
@@ -113,10 +180,20 @@ class AlldataNavigatorProvider:
         return False
 
     def match_terms(self, text: str, topic: str) -> tuple[list[str], int]:
+        topic_text = str(topic or "")
+        page_text = str(text or "")
         words = {
-            w for w in re.findall(r"[a-z0-9]+", str(topic or "").casefold())
+            w for w in re.findall(r"[a-z0-9]+", topic_text.casefold())
             if len(w) >= 3 and w not in _STOPWORDS
         }
-        folded = str(text or "").casefold()
-        matched = sorted(w for w in words if w in folded)
-        return matched, len(matched)
+        folded = page_text.casefold()
+        matched = {w for w in words if w in folded}
+
+        # Add semantic concept matches so verification follows user intent
+        # rather than requiring ALLDATA to use the exact same article title.
+        for label, pattern in _CONCEPT_GROUPS:
+            if pattern.search(topic_text) and pattern.search(page_text):
+                matched.add(label)
+
+        ordered = sorted(matched)
+        return ordered, len(ordered)
