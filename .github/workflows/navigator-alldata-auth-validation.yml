@@ -33,5 +33,23 @@ jobs:
             scrapex/alldata_navigator.py \
             scrapex/navigator_worker.py \
             scrapex/main.py
-      - name: Full ScrapeX suite
-        run: python -m pytest -q
+      - name: Full ScrapeX suite (portable)
+        run: python -m pytest -q --ignore=tests/test_work_chrome_script.py
+
+  windows-powershell:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Validate managed Work Chrome PowerShell
+        shell: pwsh
+        run: python -m pytest -q tests/test_work_chrome_script.py
