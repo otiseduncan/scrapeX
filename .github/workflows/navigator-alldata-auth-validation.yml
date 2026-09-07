@@ -1,0 +1,37 @@
+name: Navigator ALLDATA auth validation
+on:
+  push:
+    branches:
+      - navigator-alldata-credential-login-20260907
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+          python -m playwright install --with-deps chromium
+      - name: Focused Navigator suites
+        run: |
+          python -m pytest -q \
+            tests/test_alldata_navigator.py \
+            tests/test_navigator_http_api.py \
+            tests/test_navigator_api.py
+          python -m compileall -q \
+            scrapex/windows_credentials.py \
+            scrapex/alldata_navigator.py \
+            scrapex/navigator_worker.py \
+            scrapex/main.py
+      - name: Full ScrapeX suite
+        run: python -m pytest -q
