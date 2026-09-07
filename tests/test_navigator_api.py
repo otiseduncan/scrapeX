@@ -13,7 +13,7 @@ import pytest_asyncio
 
 from scrapex.db import Store
 from scrapex.navigator_browser import NavigatorBrowserManager
-from scrapex.navigator_worker import NavigatorTaskRunner
+from scrapex.navigator_worker import NavigatorTaskError, NavigatorTaskRunner
 
 
 class FixtureProvider:
@@ -230,3 +230,31 @@ async def test_unknown_ref_is_rejected_by_the_runner(runner: NavigatorTaskRunner
     with pytest.raises(NavigatorTaskError) as exc:
         await runner.act(task_id, {"action": "click", "ref": "e999"})
     assert exc.value.code == "unknown_ref"
+
+
+@pytest.mark.asyncio
+async def test_provider_authentication_is_required_before_page_state_is_exposed():
+    class Browser:
+        async def page_for(self, provider_slug, *, home_url):
+            assert provider_slug == "alldata"
+            return object()
+
+    class Provider:
+        slug = "alldata"
+        home_url = "https://my.alldata.com/"
+        allowed_domain_suffixes = ("alldata.com",)
+
+        async def ensure_authenticated(self, page):
+            return {
+                "authenticated": False,
+                "interactive_auth_required": True,
+                "message": "ALLDATA requires interactive authentication.",
+            }
+
+    task_runner = NavigatorTaskRunner(object(), Browser(), Provider())
+
+    with pytest.raises(NavigatorTaskError) as exc:
+        await task_runner._page()  # noqa: SLF001
+
+    assert exc.value.code == "authentication_required"
+    assert "ALLDATA" in exc.value.message
