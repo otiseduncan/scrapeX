@@ -172,7 +172,7 @@ def test_health_dashboard_and_production_route_surface(tmp_path: Path):
     with TestClient(create_app(services)) as client:
         health = client.get("/api/health")
         assert health.status_code == 200
-        assert health.json()["version"] == __version__ == "0.5.0"
+        assert health.json()["version"] == __version__ == "0.6.0"
         page = client.get("/").text
         assert "Run ADAS Map batch" in page
         assert "ADAS Map Batch (test bridge first)" not in page
