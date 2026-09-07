@@ -29,12 +29,22 @@ class FakeLocator:
         self.pressed = key
 
 
+class FakeMouse:
+    def __init__(self):
+        self.wheels = []
+
+    async def wheel(self, x, y):
+        self.wheels.append((x, y))
+
+
 class FakePage:
     def __init__(self, locators=None, url="https://example.test/start"):
         self._locators = locators or {}
         self.url = url
         self.goto_calls = []
         self.went_back = False
+        self.waits = []
+        self.mouse = FakeMouse()
 
     def locator(self, selector):
         assert selector.startswith("aria-ref=")
@@ -49,7 +59,7 @@ class FakePage:
         self.went_back = True
 
     async def wait_for_timeout(self, ms):
-        pass
+        self.waits.append(ms)
 
 
 class FakeProvider:
@@ -91,6 +101,20 @@ async def test_done_and_extract_and_back_need_no_ref():
     back = await executor.execute(page, None, {"action": "back"})
     assert back.executed is True
     assert page.went_back is True
+
+
+@pytest.mark.asyncio
+async def test_scroll_and_wait_need_no_ref_and_are_bounded():
+    executor = NavigatorActionExecutor(FakeProvider())
+    page = FakePage()
+
+    scrolled = await executor.execute(page, None, {"action": "scroll", "delta_y": 900})
+    waited = await executor.execute(page, None, {"action": "wait", "milliseconds": 650})
+
+    assert scrolled.executed is True
+    assert waited.executed is True
+    assert page.mouse.wheels == [(0, 900)]
+    assert 650 in page.waits
 
 
 @pytest.mark.asyncio
