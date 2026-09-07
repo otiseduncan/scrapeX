@@ -14,6 +14,7 @@ from typing import Any
 from . import alldata as alldata_heuristics
 from .models import VehicleSpec
 from .navigator_observation import build_observation
+from .windows_credentials import CredentialReadError, read_alldata_credential
 
 _STOPWORDS = frozenset({
     "the", "and", "for", "with", "this", "that", "from", "into", "your",
@@ -103,6 +104,53 @@ async def _aria_signal_candidates(page: Any) -> list[str]:
     return [element.name for element in observation.elements if element.name]
 
 
+_USERNAME_SELECTORS = (
+    "input[type='email']",
+    "input[name*='user' i]",
+    "input[id*='user' i]",
+    "input[name*='email' i]",
+    "input[id*='email' i]",
+    "input[type='text']",
+)
+
+
+async def _first_visible(page: Any, selectors: tuple[str, ...], *, timeout: int = 350) -> Any | None:
+    for selector in selectors:
+        try:
+            candidate = page.locator(selector).first
+            if await candidate.is_visible(timeout=timeout):
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
+async def _submit_login_step(page: Any, fallback: Any | None = None) -> bool:
+    try:
+        submit = page.locator("button[type='submit'], input[type='submit']").first
+        if await submit.count():
+            await submit.click()
+            return True
+    except Exception:
+        pass
+    try:
+        button = page.get_by_text(
+            re.compile(r"\b(?:Log\s*In|Sign\s*In|Continue|Next)\b", re.I)
+        ).first
+        if await button.is_visible(timeout=400):
+            await button.click()
+            return True
+    except Exception:
+        pass
+    if fallback is not None:
+        try:
+            await fallback.press("Enter")
+            return True
+        except Exception:
+            pass
+    return False
+
+
 class AlldataNavigatorProvider:
     slug = "alldata"
 
@@ -136,6 +184,123 @@ class AlldataNavigatorProvider:
         except Exception:
             return False
         return "login" not in title and "sign in" not in title
+
+    async def ensure_authenticated(self, page: Any) -> dict[str, Any]:
+        """Authenticate the provider internally before any model observation.
+
+        Reuses the ALLDATA credential X Omni already stores in Windows
+        Credential Manager. Secret values never become Navigator state,
+        observations, API responses, or model arguments. Human challenges
+        (MFA/CAPTCHA/provider confirmation) are never bypassed.
+        """
+        if await self.authenticated(page):
+            return {
+                "authenticated": True,
+                "credential_configured": True,
+                "saved_login_attempted": False,
+                "interactive_auth_required": False,
+            }
+
+        try:
+            credential = read_alldata_credential()
+        except CredentialReadError as exc:
+            return {
+                "authenticated": False,
+                "credential_configured": False,
+                "saved_login_attempted": False,
+                "interactive_auth_required": True,
+                "message": str(exc),
+            }
+        if credential is None:
+            return {
+                "authenticated": False,
+                "credential_configured": False,
+                "saved_login_attempted": False,
+                "interactive_auth_required": True,
+                "message": (
+                    "ALLDATA is signed out in ScrapeX Navigator and the X Omni "
+                    "ALLDATA credential is not available in Windows Credential Manager."
+                ),
+            }
+
+        username, password = credential
+        attempted = False
+        try:
+            username_box = await _first_visible(page, _USERNAME_SELECTORS)
+            password_box = await _first_visible(
+                page, ("input[type='password']",), timeout=600
+            )
+
+            if username_box is not None:
+                await username_box.fill(username)
+                attempted = True
+
+            # Support both one-page and common two-step sign-in forms without
+            # encoding any provider navigation beyond the authentication form.
+            if password_box is None and username_box is not None:
+                await _submit_login_step(page, username_box)
+                try:
+                    await page.wait_for_timeout(700)
+                except Exception:
+                    pass
+                if await self.authenticated(page):
+                    return {
+                        "authenticated": True,
+                        "credential_configured": True,
+                        "saved_login_attempted": True,
+                        "interactive_auth_required": False,
+                    }
+                password_box = await _first_visible(
+                    page, ("input[type='password']",), timeout=1200
+                )
+
+            if password_box is not None:
+                await password_box.fill(password)
+                attempted = True
+                await _submit_login_step(page, password_box)
+                try:
+                    await page.wait_for_timeout(1200)
+                except Exception:
+                    pass
+                try:
+                    await page.wait_for_load_state(
+                        "domcontentloaded", timeout=12_000
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            # Never include exception text here: browser-library errors can
+            # echo element values on some implementations.
+            return {
+                "authenticated": False,
+                "credential_configured": True,
+                "saved_login_attempted": attempted,
+                "interactive_auth_required": True,
+                "message": (
+                    "ALLDATA saved-credential login could not be completed. "
+                    "Use the visible ScrapeX Navigator browser to finish authentication."
+                ),
+            }
+        finally:
+            username = ""
+            password = ""
+            credential = None
+
+        authenticated = await self.authenticated(page)
+        return {
+            "authenticated": authenticated,
+            "credential_configured": True,
+            "saved_login_attempted": attempted,
+            "interactive_auth_required": not authenticated,
+            "message": (
+                None
+                if authenticated
+                else (
+                    "ALLDATA requires interactive authentication in the visible "
+                    "ScrapeX Navigator browser (for example MFA, CAPTCHA, or provider confirmation)."
+                )
+            ),
+        }
 
     async def target_signal(self, page: Any, target: dict[str, Any]) -> dict[str, Any]:
         vehicle = VehicleSpec(
