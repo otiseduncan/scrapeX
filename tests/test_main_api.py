@@ -172,7 +172,11 @@ def test_health_dashboard_and_production_route_surface(tmp_path: Path):
     with TestClient(create_app(services)) as client:
         health = client.get("/api/health")
         assert health.status_code == 200
-        assert health.json()["version"] == __version__ == "0.5.0"
+        # What matters is that /api/health reports the package's real version,
+        # not a literal that has to be hand-edited on every release. Pinning
+        # "0.5.0" here left this failing after the 0.6.0 bump, which blocks
+        # deploy-local -- it gates deployment on this suite passing.
+        assert health.json()["version"] == __version__
         page = client.get("/").text
         assert "Run ADAS Map batch" in page
         assert "ADAS Map Batch (test bridge first)" not in page

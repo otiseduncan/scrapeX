@@ -34,8 +34,15 @@ def test_release_metadata_and_documentation_are_coherent() -> None:
     project = _project()["project"]
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert project["version"] == scrapex.__version__ == "0.5.0"
-    assert readme.startswith("# ScrapeX v0.5.0\n")
+    # Coherence between the three sources is the property worth testing.
+    # Pinning the literal here made every release bump this test's problem, so
+    # it sat failing at "0.5.0" long after pyproject, the package, and the
+    # README had all moved to 0.6.0 together -- and because deploy-local gates
+    # on this suite, a stale assertion here blocks deployment outright.
+    version = project["version"]
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version), version
+    assert scrapex.__version__ == version
+    assert readme.startswith(f"# ScrapeX v{version}\n")
     for term in ("calibration iq", "adas map", "work chrome"):
         assert term in project["description"].casefold()
         assert term in readme.casefold()
