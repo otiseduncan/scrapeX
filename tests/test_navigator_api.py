@@ -82,6 +82,8 @@ async def test_full_navigation_reaches_and_verifies_correct_leaf(runner: Navigat
     )
 
     observation = await runner.observe(task_id)
+    assert "Vehicle" in observation["page_text"]
+    assert all("depth" in element for element in observation["elements"])
     search_btn = next(e for e in observation["elements"] if e["name"] == "Search")
     result_box = next(e for e in observation["elements"] if e["role"] == "textbox")
 
@@ -117,6 +119,8 @@ async def test_full_navigation_reaches_and_verifies_correct_leaf(runner: Navigat
     assert "Blind Spot Monitor Beam Axis Calibration Procedure" in procedure_text
 
     await runner.act(task_id, {"action": "extract"})
+    # A control-loop done after extraction must not erase the candidate leaf.
+    await runner.act(task_id, {"action": "done"})
     proof = await runner.verify(task_id)
 
     assert proof["verified"] is True, proof["reason"]
