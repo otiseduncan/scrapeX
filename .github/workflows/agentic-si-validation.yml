@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  navigator:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -22,7 +22,25 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
           python -m playwright install --with-deps chromium
-      - name: Test Navigator
+      - name: Test Python and Navigator
         run: |
-          python -m pytest -q
+          python -m pytest -q --ignore=tests/test_work_chrome_script.py
           python -m compileall -q scrapex
+
+  work-chrome:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install test dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Test Windows work-Chrome parser
+        shell: pwsh
+        run: python -m pytest -q tests/test_work_chrome_script.py
