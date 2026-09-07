@@ -119,7 +119,28 @@ class NavigatorTaskRunner:
         return task
 
     async def _page(self) -> Any:
-        return await self.browser_manager.page_for(self.provider.slug, home_url=self.provider.home_url)
+        page = await self.browser_manager.page_for(
+            self.provider.slug,
+            home_url=self.provider.home_url,
+        )
+        ensure_authenticated = getattr(self.provider, "ensure_authenticated", None)
+        if callable(ensure_authenticated):
+            auth = await ensure_authenticated(page)
+            if not isinstance(auth, dict) or auth.get("authenticated") is not True:
+                message = (
+                    str((auth or {}).get("message") or "").strip()
+                    if isinstance(auth, dict)
+                    else ""
+                )
+                raise NavigatorTaskError(
+                    "authentication_required",
+                    message
+                    or (
+                        f"{self.provider.slug.upper()} requires interactive "
+                        "authentication before Navigator page state can be exposed."
+                    ),
+                )
+        return page
 
     def create_task(self, target: dict[str, Any], topic: str, action_budget: Optional[int] = None) -> str:
         budget = min(MAX_ACTION_BUDGET, max(1, int(action_budget or DEFAULT_ACTION_BUDGET)))
