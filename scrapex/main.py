@@ -263,6 +263,7 @@ async def _component_status(call, component: str) -> dict[str, Any]:
 
 _NAVIGATOR_ERROR_STATUS = {
     "not_found": 404,
+    "authentication_required": 409,
     "invalid_action": 422,
     "invalid_arguments": 422,
     "domain_not_allowed": 422,
