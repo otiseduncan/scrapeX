@@ -242,3 +242,23 @@ def test_post_expand_identity_check_requires_same_vin_vehicle_and_unique_hint():
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_lookup_types_the_ro_as_real_keystrokes_and_proves_the_box_holds_it():
+    text = value()
+    assert "function Enter-Search-Text" in text
+    assert "$entry = Enter-Search-Text" in text
+    assert "[string]$observed -eq $Value" in text
+    # A UIA SetValue never reached the Vue v-model; the RO search must not use it.
+    assert "$valueSet = Set-Element-Value" not in text
+
+
+def test_collapsed_ro_row_in_unfiltered_list_falls_through_to_real_search():
+    text = value()
+    assert (
+        'if ($current.found -and $current.vin -and $current.resolution_status -eq "resolved") {'
+        in text
+    )
+    shortcut = text.index("Critical optimization: if the operator already pulled the RO up")
+    search = text.index("$searchAttempts = @()", shortcut)
+    assert "status = $current.resolution_status" not in text[shortcut:search]

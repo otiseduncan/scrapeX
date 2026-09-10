@@ -677,6 +677,57 @@ function Set-Element-Value {
     return $false
 }
 
+function Get-Element-Value {
+    param([System.Windows.Automation.AutomationElement]$Element)
+
+    try {
+        return [string]$Element.GetCurrentPattern(
+            [System.Windows.Automation.ValuePattern]::Pattern
+        ).Current.Value
+    }
+    catch { return $null }
+}
+
+function Enter-Search-Text {
+    # The RO search box is a Vue v-model input. ValuePattern.SetValue changes
+    # the accessible value without the input event Vue listens for, so the
+    # grid kept filtering on whatever had last been typed for real -- observed
+    # live: the business switch's "Warner Robins" keystrokes, never the RO.
+    # Type the value as real keystrokes into the box itself and prove the box
+    # holds exactly that value before anyone presses Search.
+    param(
+        [System.Windows.Automation.AutomationElement]$Element,
+        [string]$Value
+    )
+
+    $attempts = @()
+    $observed = $null
+    foreach ($method in @("focus_keys", "click_keys")) {
+        try {
+            if ($method -eq "focus_keys") {
+                $Element.SetFocus()
+            }
+            else {
+                Click-ElementCenter -Element $Element | Out-Null
+            }
+            Start-Sleep -Milliseconds 150
+            [System.Windows.Forms.SendKeys]::SendWait("^a")
+            Start-Sleep -Milliseconds 50
+            [System.Windows.Forms.SendKeys]::SendWait("{DEL}")
+            Start-Sleep -Milliseconds 50
+            [System.Windows.Forms.SendKeys]::SendWait($Value)
+            Start-Sleep -Milliseconds 200
+        }
+        catch {}
+        $observed = Get-Element-Value -Element $Element
+        $attempts += @{ method = $method; observed = $observed }
+        if ([string]$observed -eq $Value) {
+            return @{ value_set = $true; method = $method; observed = $observed; attempts = $attempts }
+        }
+    }
+    return @{ value_set = $false; observed = $observed; attempts = $attempts }
+}
+
 
 
 function Invoke-LegacyDefaultAction {
@@ -3667,24 +3718,12 @@ try {
             }
         }
 
-        if ($current.found -and $current.vin) {
-            if ($current.resolution_status -ne "resolved") {
-                [pscustomobject]@{
-                    success = $false
-                    action = "lookup"
-                    status = $current.resolution_status
-                    ro_number = $RoNumber
-                    vin = $current.vin
-                    vehicle = $current.vehicle
-                    observed_shop = $observedShop
-                    values = $current.values
-                    vehicle_hint_applied = $current.vehicle_hint_applied
-                    candidate_vehicles = $current.candidate_vehicles
-                    view_candidates = $current.view_candidates
-                    row_expansion = $rowExpansion
-                } | ConvertTo-Json -Depth 9 -Compress
-                exit 0
-            }
+        # Only a resolved row (View bound to this exact RO) may skip the search.
+        # The same RO also shows up as a collapsed row in the unfiltered list
+        # of recent vehicles, with no View -- stopping there reported
+        # view_not_found without ever typing the RO in. Anything short of
+        # resolved falls through to a real RO search below.
+        if ($current.found -and $current.vin -and $current.resolution_status -eq "resolved") {
             if ($null -eq $current.vehicle) {
                 [pscustomobject]@{
                     success = $false
@@ -3759,11 +3798,11 @@ try {
                 $searchAttempts += @{ attempt = $searchAttempt; status = "search_control_not_found" }
                 continue
             }
-            $valueSet = Set-Element-Value `
+            $entry = Enter-Search-Text `
                 -Element $searchEdit.element `
                 -Value $RoNumber
-            if (-not $valueSet) {
-                $searchAttempts += @{ attempt = $searchAttempt; status = "search_value_failed" }
+            if (-not $entry.value_set) {
+                $searchAttempts += @{ attempt = $searchAttempt; status = "search_value_failed"; entry = $entry }
                 continue
             }
 
@@ -3780,6 +3819,7 @@ try {
             $searchAttempts += @{
                 attempt = $searchAttempt
                 value_set = $true
+                search_entry = @{ method = $entry.method; observed = $entry.observed }
                 search_action = $searchAction
                 stable_resolved = $wait.stable_resolved
                 result_status = if ($after) { $after.resolution_status } else { "ro_not_visible" }
