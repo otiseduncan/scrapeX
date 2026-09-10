@@ -43,6 +43,15 @@ class CIQReconciliationError(RuntimeError):
         self.result = result or {}
 
 
+def _refused_as_duplicate_vin(exc: CIQReconciliationError, idempotency_key: str) -> bool:
+    """True only when CIQ refused this exact update_ro for a duplicate VIN."""
+    for receipt in exc.result.get("receipts") or []:
+        if isinstance(receipt, dict) and receipt.get("idempotency_key") == idempotency_key:
+            error = receipt.get("error") if isinstance(receipt.get("error"), dict) else {}
+            return str(error.get("code") or "").strip().casefold() == "duplicate_vin"
+    return False
+
+
 def calibration_key(value: Any) -> str:
     """Return a conservative alias key; never invent a calibration type."""
     text = " ".join(str(value or "").casefold().replace("/", " ").split())
@@ -1411,7 +1420,44 @@ class CIQClient:
             {key: value for key, value in action.items() if not key.startswith("_")}
             for action in planned
         ]
-        response = await self._post_actions(wire_actions)
+        vin_not_written: dict[str, Any] | None = None
+        try:
+            response = await self._post_actions(wire_actions)
+        except CIQReconciliationError as exc:
+            # CIQ allows one active RO per VIN. A second claim on the same car
+            # (back-to-back RO numbers, e.g. 2400911765/2400911766) is still a
+            # valid RO -- it just cannot also carry the VIN. Leave CIQ's VIN
+            # as it is and keep every other change; any other refusal fails.
+            vehicle_plan = next(
+                (plan for plan in planned if plan.get("_kind") == "vehicle"), None
+            )
+            if (
+                vehicle_plan is None
+                or "vin" not in vehicle_changes
+                or not _refused_as_duplicate_vin(exc, vehicle_plan["idempotency_key"])
+            ):
+                raise
+            vin_not_written = {
+                "vin": vehicle_changes.pop("vin"),
+                "reason": "duplicate_vin",
+            }
+            if vehicle_changes:
+                identity = {
+                    "operation": "update_ro",
+                    "repair_order_id": repair_order_id,
+                    "expected_version": vehicle_plan["expected_version"],
+                    "arguments": vehicle_changes,
+                    "inspection_id": inspection_id,
+                }
+                vehicle_plan["arguments"] = vehicle_changes
+                vehicle_plan["idempotency_key"] = self._idempotency(identity)
+            else:
+                planned.remove(vehicle_plan)
+            wire_actions = [
+                {key: value for key, value in action.items() if not key.startswith("_")}
+                for action in planned
+            ]
+            response = await self._post_actions(wire_actions)
         receipts = response.get("receipts") or []
         changed: list[dict[str, Any]] = []
         vehicle_receipt: dict[str, Any] | None = None
@@ -1526,6 +1572,7 @@ class CIQClient:
             "kept": kept,
             "changed": changed,
             "vehicle_changed": vehicle_receipt,
+            "vin_not_written": vin_not_written,
             "research_reopened": research_reopened,
             "research_started": research_started,
             "adas_map_attachment": adas_map_attachment,

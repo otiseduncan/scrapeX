@@ -1163,10 +1163,14 @@ function Resolve-Inspection-View {
         [System.Windows.Automation.AutomationElement]$ExactRow,
         [string]$Ro,
         [string]$ExpectedVin,
-        [string]$ExpectedInspectionId = ""
+        [string]$ExpectedInspectionId = "",
+        # The inspection sub-row carrying the RO when the vehicle row shows a
+        # different RO for the same VIN; otherwise the vehicle row itself.
+        [System.Windows.Automation.AutomationElement]$RoScope = $null
     )
 
-    $roHits = @(Find-Exact-Ro-Hits -Root $ExactRow -Ro $Ro)
+    $roHitScope = if ($null -ne $RoScope) { $RoScope } else { $ExactRow }
+    $roHits = @(Find-Exact-Ro-Hits -Root $roHitScope -Ro $Ro)
     if ($roHits.Count -eq 0) {
         return @{ status = "ro_not_visible"; view = $null; inspection_id = $null; candidates = @() }
     }
@@ -2606,6 +2610,32 @@ function Test-Vehicle-Hints {
 }
 
 
+function Find-Single-Vehicle-Row {
+    # Vehicle rows are the ones carrying the "edit" link and a VIN; inspection
+    # sub-rows carry view/report instead. Anything other than exactly one such
+    # row on screen is not safe to bind an inspection sub-row to.
+    param([System.Windows.Automation.AutomationElement]$Root)
+
+    $rows = @{}
+    foreach ($element in (Descendants -Root $Root)) {
+        try {
+            if ($element.Current.IsOffscreen) { continue }
+            if ($element.Current.ControlType -ne [System.Windows.Automation.ControlType]::Hyperlink) { continue }
+            if ([string]$element.Current.Name -notmatch '(?i)^\s*edit\s*$') { continue }
+        }
+        catch { continue }
+        $row = Find-Row-Ancestor -Element $element
+        $rowKey = Element-Key -Element $row
+        if (-not $rowKey -or $rows.ContainsKey($rowKey)) { continue }
+        $snap = Row-Snapshot -Row $row
+        if ($null -eq $snap -or -not $snap.vin) { continue }
+        $rows[$rowKey] = @{ row = $row; snapshot = $snap }
+    }
+    if ($rows.Count -ne 1) { return $null }
+    return @($rows.Values)[0]
+}
+
+
 function Read-Current-Ro {
     param(
         [System.Windows.Automation.AutomationElement]$Root,
@@ -2642,12 +2672,16 @@ function Read-Current-Ro {
     # Collapse repeated accessible text nodes to their real row container.
     # More than one complete row for the same exact RO is not safe to rank.
     $rowCandidates = @{}
+    $vinlessRows = @{}
     foreach ($hit in $hits) {
         $row = Find-Row-Ancestor -Element $hit
         $rowKey = Element-Key -Element $row
         if (-not $rowKey -or $rowCandidates.ContainsKey($rowKey)) { continue }
         $snap = Row-Snapshot -Row $row
-        if ($null -eq $snap -or -not $snap.vin) { continue }
+        if ($null -eq $snap -or -not $snap.vin) {
+            if ($rowKey -and $null -ne $snap) { $vinlessRows[$rowKey] = $row }
+            continue
+        }
         $vehicle = Vehicle-From-Row-Values -Values $snap.values -Vin $snap.vin
         if ($null -eq $vehicle) { continue }
         $rowCandidates[$rowKey] = @{
@@ -2655,6 +2689,28 @@ function Read-Current-Ro {
             row = $row
             snapshot = $snap
             vehicle = $vehicle
+        }
+    }
+
+    # A repeat VIN keeps ONE vehicle row (showing another RO's number) and files
+    # this RO's inspection as a sub-row beneath it -- the RO then appears only
+    # in that VIN-less inspection row (live: 2400711890 under 2400711833,
+    # 2400911765 under 2400911766). When the RO search leaves exactly one
+    # vehicle row on screen, that row is the vehicle; the exact RO is still
+    # required inside the inspection's own row by Inspection-Row-Association.
+    if ($rowCandidates.Count -eq 0 -and $vinlessRows.Count -eq 1) {
+        $parent = Find-Single-Vehicle-Row -Root $Root
+        if ($null -ne $parent) {
+            $parentVehicle = Vehicle-From-Row-Values -Values $parent.snapshot.values -Vin $parent.snapshot.vin
+            if ($null -ne $parentVehicle) {
+                $rowCandidates["parent"] = @{
+                    hit = $hits[0]
+                    row = $parent.row
+                    snapshot = $parent.snapshot
+                    vehicle = $parentVehicle
+                    ro_scope = @($vinlessRows.Values)[0]
+                }
+            }
         }
     }
 
@@ -2736,6 +2792,7 @@ function Read-Current-Ro {
     $resolution = Resolve-Inspection-View `
         -Root $Root `
         -ExactRow $best.row `
+        -RoScope $best.ro_scope `
         -Ro $Ro `
         -ExpectedVin $best.snapshot.vin `
         -ExpectedInspectionId $ExpectedInspectionId

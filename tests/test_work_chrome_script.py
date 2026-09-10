@@ -73,7 +73,8 @@ def test_view_is_bound_to_exact_ro_and_inspection_without_first_view_fallback():
     assert "function Inspection-Ids-In-Scope" in text
     assert "-ExactRow $best.row" in text
     assert "-VehicleRow $ExactRow" in text
-    assert "Find-Exact-Ro-Hits -Root $ExactRow" in text
+    assert "$roHitScope = if ($null -ne $RoScope) { $RoScope } else { $ExactRow }" in text
+    assert "Find-Exact-Ro-Hits -Root $roHitScope" in text
     assert "Where-Object { $_.inspection_id -and $_.row_binding_confirmed }" in text
     assert "row_binding_confirmed = [bool]$resolution.row_binding_confirmed" in text
     assert "ExpectedInspectionId" in text
@@ -262,3 +263,14 @@ def test_collapsed_ro_row_in_unfiltered_list_falls_through_to_real_search():
     shortcut = text.index("Critical optimization: if the operator already pulled the RO up")
     search = text.index("$searchAttempts = @()", shortcut)
     assert "status = $current.resolution_status" not in text[shortcut:search]
+
+
+def test_repeat_vin_inspection_subrow_binds_to_the_single_vehicle_row():
+    text = value()
+    assert "function Find-Single-Vehicle-Row" in text
+    assert "if ($rows.Count -ne 1) { return $null }" in text
+    assert "if ($rowCandidates.Count -eq 0 -and $vinlessRows.Count -eq 1) {" in text
+    assert "ro_scope = @($vinlessRows.Values)[0]" in text
+    assert "-RoScope $best.ro_scope" in text
+    # The exact RO must still be inside the inspection's own row.
+    assert "$ownValues = @(Visible-Names-In-Scope -Root $InspectionScope)" in text

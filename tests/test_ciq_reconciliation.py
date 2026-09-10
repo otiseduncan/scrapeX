@@ -906,3 +906,84 @@ async def test_an_already_canonical_map_does_not_reopen_completed_research(tmp_p
     assert "update_research" not in [a["operation"] for a in client.actions]
     assert client.snapshot["research"]["state"] == "research_complete"
     assert result["adas_map_attachment"]["document_id"] == "doc-1"
+
+
+class DuplicateVinCIQ(FakeCIQ):
+    """CIQ refuses a VIN that another active RO already carries."""
+
+    async def _post_actions(self, actions):
+        refused = next(
+            (
+                action for action in actions
+                if action["operation"] == "update_ro" and "vin" in action["arguments"]
+            ),
+            None,
+        )
+        if refused is None:
+            return await super()._post_actions(actions)
+        self.actions.extend(copy.deepcopy(actions))
+        receipts = [
+            {
+                "idempotency_key": action["idempotency_key"],
+                "operation": action["operation"],
+                "status": "failed" if action is refused else "completed",
+                "success": action is not refused,
+                "error": (
+                    {"code": "duplicate_vin", "message": "An active vehicle with this VIN already exists."}
+                    if action is refused
+                    else None
+                ),
+                "verification": {"verified": action is not refused},
+            }
+            for action in actions
+        ]
+        raise CIQReconciliationError(
+            "Calibration IQ did not return a verified completed receipt for update_ro.",
+            result={"receipts": receipts},
+        )
+
+
+@pytest.mark.asyncio
+async def test_duplicate_vin_refusal_keeps_other_vehicle_fields_and_requirements():
+    client = DuplicateVinCIQ(snapshot())
+    result = await client.reconcile_requirements(
+        repair_order_id="ro-1",
+        requirements=["Seat Belt"],
+        batch_id="batch-1",
+        item_id="item-1",
+        inspection_id="9900001",
+        vehicle={"vin": "TESTCAR0000000001", "model": "Sienna L FWD"},
+    )
+
+    assert result["verified"] is True
+    assert result["vin_not_written"] == {"vin": "TESTCAR0000000001", "reason": "duplicate_vin"}
+    assert client.snapshot["repair_order"]["vin"] is None
+    assert client.snapshot["repair_order"]["model"] == "Sienna L FWD"
+    assert any(
+        row["calibration_type"] == "Seat Belt" and row["determination"] == "REQUIRED"
+        for row in client.snapshot["calibrations"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_non_duplicate_vin_refusal_still_fails_closed():
+    class RefusingCIQ(FakeCIQ):
+        async def _post_actions(self, actions):
+            raise CIQReconciliationError(
+                "Calibration IQ did not return a verified completed receipt for update_ro.",
+                result={"receipts": [{
+                    "idempotency_key": actions[0]["idempotency_key"],
+                    "error": {"code": "version_conflict"},
+                }]},
+            )
+
+    client = RefusingCIQ(snapshot())
+    with pytest.raises(CIQReconciliationError):
+        await client.reconcile_requirements(
+            repair_order_id="ro-1",
+            requirements=["Seat Belt"],
+            batch_id="batch-1",
+            item_id="item-1",
+            inspection_id="9900001",
+            vehicle={"vin": "TESTCAR0000000001"},
+        )
