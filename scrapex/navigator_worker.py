@@ -294,85 +294,160 @@ class NavigatorTaskRunner:
         self.store.save_navigator_verification(task_id, proof)
         return proof
 
-    async def _prepare_for_print(self, page: Any) -> dict[str, Any]:
-        """Run the provider's own print preparation, without its print dialog.
+    @staticmethod
+    def _jpeg_size(data: bytes) -> tuple[int, int]:
+        """Width and height from a JPEG's frame header."""
+        index = 2
+        while index < len(data) - 9:
+            if data[index] != 0xFF:
+                index += 1
+                continue
+            marker = data[index + 1]
+            if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+                index += 2
+                continue
+            length = int.from_bytes(data[index + 2:index + 4], "big")
+            if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                          0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                height = int.from_bytes(data[index + 5:index + 7], "big")
+                width = int.from_bytes(data[index + 7:index + 9], "big")
+                return width, height
+            index += 2 + length
+        raise ValueError("not a usable JPEG")
 
-        ALLDATA's articles do not render under print media on their own: a
-        straight page.pdf() produces one page carrying the site's notice --
-        "When using the browser's Print Button, images don't preload when first
-        attempting to print. Please use the print icon located at the top right
-        of the article" -- followed by blank sheets. Measured 2026-09-12: 11
-        pages, 46,510 bytes, zero images, zero text after page one, identical
-        on every attempt whatever was scrolled or awaited beforehand.
+    @classmethod
+    def _jpegs_to_pdf(cls, frames: list[bytes]) -> bytes:
+        """One page per frame, each JPEG embedded without re-encoding.
 
-        The site's print control is what prepares the document, and it ends by
-        calling window.print(). In a headless browser that opens a dialog
-        nothing can dismiss and the page stops responding, so window.print is
-        replaced with a recorder for the duration: the preparation runs, the
-        dialog never opens, and Playwright renders the prepared page.
-
-        The control itself carries no accessible name or role, so it cannot be
-        reached by aria-ref; it is found by the attributes print controls
-        conventionally carry.
+        Deliberately dependency-free: a JPEG is already a valid PDF image
+        stream under DCTDecode, so the bytes go in untouched and ScrapeX gains
+        no imaging library it would otherwise not need.
         """
-        return await page.evaluate(
-            """async () => {
-                const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-                const original = window.print;
-                let printCalled = false;
-                window.print = () => { printCalled = true; };
-                try {
-                    const selectors = [
-                        '[aria-label*="print" i]', '[title*="print" i]',
-                        '[class*="print" i]', '[id*="print" i]',
-                        '[data-testid*="print" i]',
-                    ];
-                    const seen = new Set();
-                    const candidates = [];
-                    for (const sel of selectors) {
-                        for (const el of document.querySelectorAll(sel)) {
-                            if (seen.has(el)) continue;
-                            seen.add(el);
-                            const r = el.getBoundingClientRect();
-                            if (r.width > 0 && r.height > 0 && r.width < 120 && r.height < 120) {
-                                candidates.push(el);
-                            }
-                        }
-                    }
-                    let clicked = 0;
-                    for (const el of candidates.slice(0, 4)) {
-                        try { el.click(); clicked++; } catch (e) {}
-                        await sleep(700);
-                        if (printCalled) break;
-                    }
+        objects: list[bytes] = []
 
-                    for (const img of document.images) {
-                        img.loading = 'eager';
-                    }
-                    await Promise.all(Array.from(document.images).map(img => {
-                        if (img.complete && img.naturalWidth > 0) return Promise.resolve();
-                        return new Promise(resolve => {
-                            const done = () => resolve();
-                            img.addEventListener('load', done, {once: true});
-                            img.addEventListener('error', done, {once: true});
-                            setTimeout(done, 8000);
-                        });
-                    }));
-                    await sleep(600);
+        def add(body: bytes) -> int:
+            objects.append(body)
+            return len(objects)
 
-                    const imgs = Array.from(document.images);
-                    return {
-                        candidates: candidates.length,
-                        clicked: clicked,
-                        printCalled: printCalled,
-                        images: imgs.length,
-                        loaded: imgs.filter(i => i.complete && i.naturalWidth > 0).length,
-                    };
-                } finally {
-                    window.print = original;
-                }
-            }"""
+        catalog_id = add(b"")   # reserved, filled once the page tree exists
+        pages_id = add(b"")
+        page_ids: list[int] = []
+
+        for frame in frames:
+            width, height = cls._jpeg_size(frame)
+            image_id = add(
+                b"<< /Type /XObject /Subtype /Image /Width " + str(width).encode()
+                + b" /Height " + str(height).encode()
+                + b" /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length "
+                + str(len(frame)).encode() + b" >>\nstream\n" + frame + b"\nendstream"
+            )
+            content = (
+                f"q {width} 0 0 {height} 0 0 cm /Im0 Do Q".encode()
+            )
+            content_id = add(
+                b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n"
+                + content + b"\nendstream"
+            )
+            page_ids.append(add(
+                b"<< /Type /Page /Parent " + str(pages_id).encode()
+                + b" 0 R /MediaBox [0 0 " + str(width).encode() + b" " + str(height).encode()
+                + b"] /Resources << /XObject << /Im0 " + str(image_id).encode()
+                + b" 0 R >> >> /Contents " + str(content_id).encode() + b" 0 R >>"
+            ))
+
+        kids = b" ".join(str(pid).encode() + b" 0 R" for pid in page_ids)
+        objects[pages_id - 1] = (
+            b"<< /Type /Pages /Count " + str(len(page_ids)).encode()
+            + b" /Kids [" + kids + b"] >>"
         )
+        objects[catalog_id - 1] = b"<< /Type /Catalog /Pages " + str(pages_id).encode() + b" 0 R >>"
+
+        out = bytearray(b"%PDF-1.4\n")
+        offsets = [0]
+        for number, body in enumerate(objects, start=1):
+            offsets.append(len(out))
+            out += str(number).encode() + b" 0 obj\n" + body + b"\nendobj\n"
+        xref_at = len(out)
+        out += b"xref\n0 " + str(len(objects) + 1).encode() + b"\n"
+        out += b"0000000000 65535 f \n"
+        for offset in offsets[1:]:
+            out += f"{offset:010d} 00000 n \n".encode()
+        out += (
+            b"trailer\n<< /Size " + str(len(objects) + 1).encode()
+            + b" /Root " + str(catalog_id).encode() + b" 0 R >>\nstartxref\n"
+            + str(xref_at).encode() + b"\n%%EOF\n"
+        )
+        return bytes(out)
+
+    async def _render_by_screenshot(self, page: Any) -> bytes:
+        """Capture the article as it renders on screen, page by page.
+
+        ALLDATA's print stylesheet does not render its articles under print
+        media: a direct page.pdf() returns the site's own "use the print icon"
+        notice followed by blank sheets -- 11 pages, 46,510 bytes, no text past
+        page one, identical on every attempt whatever is preloaded or clicked
+        beforehand. Its print control ends in window.print(), which in a
+        headless browser opens a dialog nothing can dismiss and hangs the page.
+
+        On screen the same article renders perfectly, diagrams included, so the
+        screen is the source. The result is a page-image PDF -- the same kind
+        of artifact this shop already files by hand.
+        """
+        scroller_top = "() => { const d=document.scrollingElement||document.documentElement; d.scrollTop=0; }"
+        try:
+            await page.evaluate(scroller_top)
+        except Exception:
+            pass
+        await page.wait_for_timeout(600)
+
+        frames: list[bytes] = []
+        seen: set[int] = set()
+        step = 620
+        for _ in range(40):
+            shot = await page.screenshot(type="jpeg", quality=80)
+            digest = hash(shot)
+            if digest not in seen:
+                seen.add(digest)
+                frames.append(shot)
+            try:
+                at_bottom = await page.evaluate(
+                    """(step) => {
+                        const pick = () => {
+                            const de = document.documentElement;
+                            let best = de, area = -1;
+                            for (const el of [de, document.body, ...document.querySelectorAll('*')]) {
+                                if (!el) continue;
+                                const sh = el.scrollHeight||0, ch = el.clientHeight||0;
+                                if (ch <= 0 || sh - ch <= 8) continue;
+                                if (el !== de && el !== document.body) {
+                                    const oy = getComputedStyle(el).overflowY;
+                                    if (oy!=='auto' && oy!=='scroll' && oy!=='overlay') continue;
+                                }
+                                const a = ch * (el.clientWidth||0);
+                                if (a > area) { area = a; best = el; }
+                            }
+                            return best;
+                        };
+                        const s = pick();
+                        s.scrollTop += step;
+                        return s.scrollTop + s.clientHeight >= s.scrollHeight - 2;
+                    }""",
+                    step,
+                )
+            except Exception:
+                break
+            await page.wait_for_timeout(700)
+            if at_bottom:
+                shot = await page.screenshot(type="jpeg", quality=80)
+                if hash(shot) not in seen:
+                    frames.append(shot)
+                break
+
+        if not frames:
+            raise NavigatorTaskError(
+                "capture_failed", "No page frames could be captured for this article."
+            )
+        return self._jpegs_to_pdf(frames)
 
     async def capture(self, task_id: str) -> dict[str, Any]:
         """Persist the verified leaf from this exact Navigator browser session.
@@ -461,18 +536,9 @@ class NavigatorTaskRunner:
         # So walk the document to trigger whatever lazy-loads, then wait for
         # every image to finish decoding before rendering.
         try:
-            prep = await self._prepare_for_print(page)
-            log.warning("navigator capture print-prep: %s", prep)
-        except Exception as exc:  # noqa: BLE001
-            # Never fail a capture because preparation was imperfect; a PDF
-            # missing some figures still beats no PDF at all.
-            log.warning("navigator capture print-prep failed: %s", type(exc).__name__)
-        try:
-            pdf_bytes = await page.pdf(
-                format="Letter",
-                print_background=True,
-                prefer_css_page_size=True,
-            )
+            pdf_bytes = await self._render_by_screenshot(page)
+        except NavigatorTaskError:
+            raise
         except Exception as exc:
             raise NavigatorTaskError(
                 "capture_failed",
