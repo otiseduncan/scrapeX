@@ -47,6 +47,11 @@ def _observation_to_dict(observation: Observation) -> dict[str, Any]:
         "title": observation.title,
         "breadcrumb": list(observation.breadcrumb),
         "page_text": observation.page_text,
+        "page_text_truncated": observation.page_text_truncated,
+        "page_text_total_chars": observation.page_text_total_chars,
+        "scroll_y": observation.scroll_y,
+        "scroll_height": observation.scroll_height,
+        "viewport_height": observation.viewport_height,
         "elements": [asdict(el) for el in observation.elements],
     }
 
@@ -64,6 +69,11 @@ def _observation_from_dict(data: Optional[dict[str, Any]]) -> Optional[Observati
         elements=elements,
         page_text=data.get("page_text") or "",
         breadcrumb=list(data.get("breadcrumb") or []),
+        page_text_truncated=bool(data.get("page_text_truncated") or False),
+        page_text_total_chars=int(data.get("page_text_total_chars") or 0),
+        scroll_y=int(data.get("scroll_y") or 0),
+        scroll_height=int(data.get("scroll_height") or 0),
+        viewport_height=int(data.get("viewport_height") or 0),
     )
 
 
@@ -80,6 +90,16 @@ def public_observation(observation: Observation, *, loop_warning=None, backtrack
         "title": observation.title,
         "breadcrumb": list(observation.breadcrumb),
         "page_text": observation.page_text,
+        # Say plainly when the page holds more than was handed over, so a
+        # cut-off procedure cannot read as a finished one.
+        "page_text_truncated": observation.page_text_truncated,
+        "page_text_total_chars": observation.page_text_total_chars,
+        "scroll_position": {
+            "scroll_y": observation.scroll_y,
+            "scroll_height": observation.scroll_height,
+            "viewport_height": observation.viewport_height,
+            "at_page_bottom": observation.at_page_bottom,
+        },
         "elements": [
             {
                 "ref": el.ref,

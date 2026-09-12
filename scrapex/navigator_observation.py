@@ -55,6 +55,28 @@ class Observation:
     elements: list[ObservationNode] = field(default_factory=list)
     page_text: str = ""
     breadcrumb: list[str] = field(default_factory=list)
+    # A long OEM procedure does not fit in MAX_PAGE_TEXT_CHARS, and handing
+    # back the first 8k of it silently is indistinguishable from handing back
+    # the whole page. Confirmed live on 2026-09-12: the ALLDATA article
+    # "Front Radar Unit (ADAS) - Repair Procedures" for a 2021 Hyundai Truck
+    # Palisade came back as exactly 8000 characters ending mid-word, so the
+    # calibration target distance -- which sits at the bottom of that
+    # procedure -- was absent with nothing to say so. The reader clicked
+    # around the part it could see instead of scrolling, because as far as
+    # the observation showed there was nothing below.
+    page_text_truncated: bool = False
+    page_text_total_chars: int = 0
+    # Where the viewport sits in the document, so "is there more below?" is
+    # answerable from the observation instead of guessed from pixels.
+    scroll_y: int = 0
+    scroll_height: int = 0
+    viewport_height: int = 0
+
+    @property
+    def at_page_bottom(self) -> bool:
+        if self.scroll_height <= 0 or self.viewport_height <= 0:
+            return False
+        return self.scroll_y + self.viewport_height >= self.scroll_height - 2
 
 
 def _unescape(text: str) -> str:
@@ -118,6 +140,12 @@ def bounded_text(raw: str, *, max_chars: int = MAX_PAGE_TEXT_CHARS) -> str:
     return text[:max_chars]
 
 
+def text_extent(raw: str, *, max_chars: int = MAX_PAGE_TEXT_CHARS) -> tuple[bool, int]:
+    """Whether bounded_text had to cut, and the full length it cut from."""
+    total = len(" ".join(str(raw or "").split()))
+    return total > max_chars, total
+
+
 async def build_observation(page: Any, *, breadcrumb: Optional[list[str]] = None) -> Observation:
     """Build a full Observation from a live Playwright ``Page``."""
     try:
@@ -147,12 +175,31 @@ async def build_observation(page: Any, *, breadcrumb: Optional[list[str]] = None
     except Exception:
         title = ""
 
+    try:
+        geometry = await page.evaluate(
+            "() => ({"
+            "  scrollY: Math.round(window.scrollY || 0),"
+            "  scrollHeight: Math.round((document.documentElement"
+            "    || document.body || {}).scrollHeight || 0),"
+            "  innerHeight: Math.round(window.innerHeight || 0)"
+            "})"
+        )
+    except Exception:
+        geometry = {}
+
+    truncated, total_chars = text_extent(raw_text)
+
     return Observation(
         url=str(page.url or ""),
         title=title,
         elements=elements,
         page_text=bounded_text(raw_text),
         breadcrumb=list(breadcrumb or []),
+        page_text_truncated=truncated,
+        page_text_total_chars=total_chars,
+        scroll_y=int((geometry or {}).get("scrollY") or 0),
+        scroll_height=int((geometry or {}).get("scrollHeight") or 0),
+        viewport_height=int((geometry or {}).get("innerHeight") or 0),
     )
 
 
