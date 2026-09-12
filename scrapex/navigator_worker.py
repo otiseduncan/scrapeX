@@ -290,6 +290,61 @@ class NavigatorTaskRunner:
         self.store.save_navigator_verification(task_id, proof)
         return proof
 
+    async def _preload_images(self, page: Any) -> None:
+        """Scroll the whole document and wait for every image to finish loading."""
+        await page.evaluate(
+            """async () => {
+                const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+                const scroller = (() => {
+                    const de = document.documentElement;
+                    const all = [de, document.body, ...document.querySelectorAll('*')];
+                    let best = de, bestArea = -1;
+                    for (const el of all) {
+                        if (!el) continue;
+                        const sh = el.scrollHeight || 0, ch = el.clientHeight || 0;
+                        if (ch <= 0 || sh - ch <= 8) continue;
+                        if (el !== de && el !== document.body) {
+                            const oy = getComputedStyle(el).overflowY;
+                            if (oy !== 'auto' && oy !== 'scroll' && oy !== 'overlay') continue;
+                        }
+                        const area = ch * (el.clientWidth || 0);
+                        if (area > bestArea) { bestArea = area; best = el; }
+                    }
+                    return best;
+                })();
+
+                for (const img of document.images) {
+                    img.loading = 'eager';
+                    if (img.decoding) img.decoding = 'sync';
+                }
+
+                const step = Math.max(200, (scroller.clientHeight || 720) - 80);
+                const limit = (scroller.scrollHeight || 0) + step * 2;
+                for (let y = 0; y <= limit; y += step) {
+                    scroller.scrollTop = y;
+                    await sleep(160);
+                    if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2) {
+                        await sleep(240);
+                        if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2) break;
+                    }
+                }
+                scroller.scrollTop = 0;
+                await sleep(200);
+
+                await Promise.all(Array.from(document.images).map(img => {
+                    if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+                    return new Promise(resolve => {
+                        const done = () => resolve();
+                        img.addEventListener('load', done, {once: true});
+                        img.addEventListener('error', done, {once: true});
+                        setTimeout(done, 8000);
+                    });
+                }));
+            }"""
+        )
+        # Decoding can trail the load event; give the renderer a moment.
+        await page.wait_for_timeout(1200)
+
     async def capture(self, task_id: str) -> dict[str, Any]:
         """Persist the verified leaf from this exact Navigator browser session.
 
@@ -364,6 +419,24 @@ class NavigatorTaskRunner:
                 "verified_page_changed",
                 "The provider browser changed after verification; capture was refused.",
             )
+        # ALLDATA states the problem itself, in the printed output: "When using
+        # the browser's Print Button, images don't preload when first attempting
+        # to print." A procedure's diagrams -- target layouts, reflector
+        # positions, tool identification -- are the part a technician cannot
+        # work without, and a PDF rendered before they load silently omits every
+        # one of them. Confirmed on 2026-09-12: the Honda Civic millimeter wave
+        # radar aiming procedure captured as 11 pages and 46KB with no figures,
+        # against 1.3MB for the same document printed from a browser that had
+        # them loaded.
+        #
+        # So walk the document to trigger whatever lazy-loads, then wait for
+        # every image to finish decoding before rendering.
+        try:
+            await self._preload_images(page)
+        except Exception:
+            # Never fail a capture because preloading was imperfect; a PDF with
+            # some images missing still beats no PDF at all.
+            pass
         try:
             pdf_bytes = await page.pdf(
                 format="Letter",
