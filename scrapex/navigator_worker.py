@@ -29,6 +29,10 @@ from .navigator_providers import NavigatorProvider
 from .navigator_verification import evaluate_navigation_claim
 from .storage_policy import safe_component, service_information_directory
 
+import logging
+
+log = logging.getLogger("scrapex.navigator_worker")
+
 TERMINAL_STATES = frozenset({"verified", "exhausted", "failed"})
 DEFAULT_ACTION_BUDGET = 50
 MAX_ACTION_BUDGET = 80
@@ -311,7 +315,7 @@ class NavigatorTaskRunner:
                     target = frame
         except Exception:
             target = page
-        await target.evaluate(
+        report = await target.evaluate(
             """async () => {
                 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
                 const scroller = (() => {
@@ -359,8 +363,22 @@ class NavigatorTaskRunner:
                         setTimeout(done, 8000);
                     });
                 }));
+
+                const imgs = Array.from(document.images);
+                return {
+                    url: location.href.slice(0, 120),
+                    images: imgs.length,
+                    loaded: imgs.filter(i => i.complete && i.naturalWidth > 0).length,
+                    broken: imgs.filter(i => i.complete && i.naturalWidth === 0).length,
+                    scrollHeight: scroller.scrollHeight,
+                    sample: imgs.slice(0, 3).map(i => ({
+                        w: i.naturalWidth, h: i.naturalHeight,
+                        src: (i.currentSrc || i.src || '').slice(0, 90),
+                    })),
+                };
             }"""
         )
+        log.warning("navigator capture preload: %s", report)
         # Decoding can trail the load event; give the renderer a moment.
         await page.wait_for_timeout(1500)
 
