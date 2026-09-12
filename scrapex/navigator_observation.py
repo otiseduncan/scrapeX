@@ -38,6 +38,20 @@ _TRAILING_TEXT_RE = re.compile(r":\s*(\S.*)$")
 # element list a caller feeds back to a model.
 _PUA_ONLY_RE = re.compile(r"^[-\s]+$")
 
+# Roles a caller can actually act on. An icon-only control -- a magnifier,
+# a chevron, a close X -- carries its meaning in a glyph rather than a name,
+# so dropping unnamed nodes wholesale removed the controls themselves.
+# Confirmed live on 2026-09-12: ALLDATA's vehicle page reported zero
+# buttons, and the search button beside its search box was absent from
+# every observation ever taken -- the one control that reaches a vehicle's
+# content without guessing that manufacturer's menu tree. Nameless
+# *non*-interactive nodes stay dropped; those are only noise.
+_INTERACTIVE_ROLES = frozenset({
+    "button", "link", "searchbox", "textbox", "combobox", "checkbox",
+    "radio", "tab", "menuitem", "menuitemcheckbox", "menuitemradio",
+    "option", "treeitem", "switch", "slider", "spinbutton",
+})
+
 
 @dataclass(frozen=True)
 class ObservationNode:
@@ -192,6 +206,7 @@ def parse_aria_snapshot(
     and skipped -- there is nothing to click and no ref to click it with.
     """
     nodes: list[ObservationNode] = []
+    last_named = ""
     for raw_line in str(text or "").splitlines():
         if len(nodes) >= max_elements:
             break
@@ -219,7 +234,18 @@ def parse_aria_snapshot(
             name = trailing_match.group(1).strip() if trailing_match else ""
 
         if not name or _PUA_ONLY_RE.match(name):
-            continue
+            if role not in _INTERACTIVE_ROLES:
+                continue
+            # Keep the control, and say where it sits: the nearest named thing
+            # before it is usually what it acts on, which is how a person reads
+            # an unlabelled magnifier sitting next to a search box.
+            name = (
+                f"unlabeled {role} after '{last_named[:40]}'"
+                if last_named
+                else f"unlabeled {role}"
+            )
+        else:
+            last_named = name
 
         expanded: Optional[bool] = None
         if "[expanded]" in body:
