@@ -315,6 +315,28 @@ class NavigatorTaskRunner:
                     target = frame
         except Exception:
             target = page
+        # Diagnostic: which frames exist and what they hold. Written to a file
+        # because the service's logging config does not surface warnings here.
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            rows = []
+            for fr in list(getattr(page, "frames", []) or []):
+                try:
+                    body = await fr.inner_text("body")
+                except Exception:
+                    body = ""
+                try:
+                    imgs = await fr.evaluate("() => document.images.length")
+                except Exception:
+                    imgs = -1
+                rows.append({"url": str(getattr(fr, "url", ""))[:200],
+                             "text": len(body or ""), "images": imgs})
+            _Path(r"X:\ScrapeX\data\capture_frames.json").write_text(
+                _json.dumps(rows, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
         report = await target.evaluate(
             """async () => {
                 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
