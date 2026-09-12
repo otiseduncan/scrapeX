@@ -291,8 +291,27 @@ class NavigatorTaskRunner:
         return proof
 
     async def _preload_images(self, page: Any) -> None:
-        """Scroll the whole document and wait for every image to finish loading."""
-        await page.evaluate(
+        """Scroll the whole document and wait for every image to finish loading.
+
+        Runs in the frame that holds the content, not the top page. ALLDATA
+        renders its articles inside an iframe, so evaluating against the outer
+        document reaches a shell with no figures in it at all -- the first
+        attempt at this changed the captured PDF by exactly zero bytes.
+        """
+        target = page
+        try:
+            best_length = -1
+            for frame in list(getattr(page, "frames", []) or []) or [page]:
+                try:
+                    text = await frame.inner_text("body")
+                except Exception:
+                    continue
+                if len(text or "") > best_length:
+                    best_length = len(text or "")
+                    target = frame
+        except Exception:
+            target = page
+        await target.evaluate(
             """async () => {
                 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
                 const scroller = (() => {
@@ -343,7 +362,7 @@ class NavigatorTaskRunner:
             }"""
         )
         # Decoding can trail the load event; give the renderer a moment.
-        await page.wait_for_timeout(1200)
+        await page.wait_for_timeout(1500)
 
     async def capture(self, task_id: str) -> dict[str, Any]:
         """Persist the verified leaf from this exact Navigator browser session.
