@@ -79,6 +79,105 @@ class Observation:
         return self.scroll_y + self.viewport_height >= self.scroll_height - 2
 
 
+# ALLDATA renders its content inside an iframe whose own inner container does
+# the scrolling -- the top document never scrolls at all. Measured live on
+# 2026-09-12 across a whole run: document.documentElement.scrollHeight equalled
+# window.innerHeight (720 == 720) on every page, including a 7,758-character
+# procedure article, so geometry read from the top document reported
+# "at the bottom" everywhere and was worse than reporting nothing.
+#
+# This finds the element that actually governs reading: the largest visible
+# box whose content overflows it, preferring real scroll containers. Used for
+# both measuring position and performing a scroll, so the two always agree
+# about what "the page" means.
+SCROLLER_JS = """() => {
+  const doc = document;
+  const de = doc.documentElement;
+  const seen = new Set();
+  const found = [];
+  const consider = (el) => {
+    if (!el || seen.has(el)) return;
+    seen.add(el);
+    const sh = el.scrollHeight || 0;
+    const ch = el.clientHeight || 0;
+    if (ch <= 0 || sh - ch <= 8) return;
+    if (el !== de && el !== doc.body) {
+      const oy = getComputedStyle(el).overflowY;
+      if (oy !== 'auto' && oy !== 'scroll' && oy !== 'overlay') return;
+    }
+    found.push({el: el, top: el.scrollTop || 0, sh: sh, ch: ch, w: el.clientWidth || 0});
+  };
+  consider(de);
+  consider(doc.body);
+  const all = doc.querySelectorAll('*');
+  const cap = Math.min(all.length, 4000);
+  for (let i = 0; i < cap; i++) consider(all[i]);
+  if (!found.length) {
+    return {scrollY: 0,
+            scrollHeight: de ? (de.scrollHeight || 0) : 0,
+            innerHeight: window.innerHeight || 0,
+            scrollable: false};
+  }
+  found.sort((a, b) => (b.ch * b.w) - (a.ch * a.w) || (b.sh - a.sh));
+  const best = found[0];
+  return {scrollY: Math.round(best.top),
+          scrollHeight: Math.round(best.sh),
+          innerHeight: Math.round(best.ch),
+          scrollable: true};
+}"""
+
+SCROLL_BY_JS = """(delta) => {
+  const doc = document;
+  const de = doc.documentElement;
+  const seen = new Set();
+  const found = [];
+  const consider = (el) => {
+    if (!el || seen.has(el)) return;
+    seen.add(el);
+    const sh = el.scrollHeight || 0;
+    const ch = el.clientHeight || 0;
+    if (ch <= 0 || sh - ch <= 8) return;
+    if (el !== de && el !== doc.body) {
+      const oy = getComputedStyle(el).overflowY;
+      if (oy !== 'auto' && oy !== 'scroll' && oy !== 'overlay') return;
+    }
+    found.push({el: el, ch: ch, sh: sh, w: el.clientWidth || 0});
+  };
+  consider(de);
+  consider(doc.body);
+  const all = doc.querySelectorAll('*');
+  const cap = Math.min(all.length, 4000);
+  for (let i = 0; i < cap; i++) consider(all[i]);
+  if (!found.length) { window.scrollBy(0, delta); return false; }
+  found.sort((a, b) => (b.ch * b.w) - (a.ch * a.w) || (b.sh - a.sh));
+  const target = found[0].el;
+  const before = target.scrollTop;
+  target.scrollTop = before + delta;
+  return target.scrollTop !== before;
+}"""
+
+
+async def content_frame(page):
+    """The frame carrying the most rendered text -- where the reader is looking.
+
+    ALLDATA's refs are frame-scoped (``f8e1370`` is frame 8), so the top page
+    is only a shell. Geometry and scrolling must both act on the frame that
+    actually holds the procedure, not on the shell around it.
+    """
+    best = page
+    best_length = -1
+    for frame in list(getattr(page, "frames", []) or []) or [page]:
+        try:
+            text = await frame.inner_text("body")
+        except Exception:
+            continue
+        length = len(text or "")
+        if length > best_length:
+            best_length = length
+            best = frame
+    return best
+
+
 def _unescape(text: str) -> str:
     return text.replace('\\"', '"').replace("\\\\", "\\")
 
@@ -176,14 +275,7 @@ async def build_observation(page: Any, *, breadcrumb: Optional[list[str]] = None
         title = ""
 
     try:
-        geometry = await page.evaluate(
-            "() => ({"
-            "  scrollY: Math.round(window.scrollY || 0),"
-            "  scrollHeight: Math.round((document.documentElement"
-            "    || document.body || {}).scrollHeight || 0),"
-            "  innerHeight: Math.round(window.innerHeight || 0)"
-            "})"
-        )
+        geometry = await (await content_frame(page)).evaluate(SCROLLER_JS)
     except Exception:
         geometry = {}
 

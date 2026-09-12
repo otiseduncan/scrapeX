@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from . import navigator_observation
 from .navigator_observation import Observation
 from .navigator_providers import NavigatorProvider, domain_allowed
 
@@ -99,7 +100,22 @@ class NavigatorActionExecutor:
             except (TypeError, ValueError) as exc:
                 raise ActionError("invalid_arguments", "'scroll' requires integer 'delta_y'.") from exc
             delta_y = max(-1600, min(1600, delta_y))
-            await page.mouse.wheel(0, delta_y)
+            # mouse.wheel fires wherever the pointer happens to sit -- (0, 0)
+            # until something has been clicked -- so on ALLDATA it landed on
+            # the shell and moved nothing at all. Scroll the container the
+            # observation measures instead, so "scroll down" and "how far down
+            # am I" refer to the same element. The wheel stays as a fallback
+            # for pages with no such container.
+            scrolled = False
+            try:
+                frame = await navigator_observation.content_frame(page)
+                scrolled = bool(
+                    await frame.evaluate(navigator_observation.SCROLL_BY_JS, delta_y)
+                )
+            except Exception:
+                scrolled = False
+            if not scrolled:
+                await page.mouse.wheel(0, delta_y)
             await page.wait_for_timeout(_DOM_SETTLE_MS)
             return ActionResult(action=kind, ref=None, executed=True, is_search_action=False)
 
