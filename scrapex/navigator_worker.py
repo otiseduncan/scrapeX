@@ -294,115 +294,85 @@ class NavigatorTaskRunner:
         self.store.save_navigator_verification(task_id, proof)
         return proof
 
-    async def _preload_images(self, page: Any) -> None:
-        """Scroll the whole document and wait for every image to finish loading.
+    async def _prepare_for_print(self, page: Any) -> dict[str, Any]:
+        """Run the provider's own print preparation, without its print dialog.
 
-        Runs in the frame that holds the content, not the top page. ALLDATA
-        renders its articles inside an iframe, so evaluating against the outer
-        document reaches a shell with no figures in it at all -- the first
-        attempt at this changed the captured PDF by exactly zero bytes.
+        ALLDATA's articles do not render under print media on their own: a
+        straight page.pdf() produces one page carrying the site's notice --
+        "When using the browser's Print Button, images don't preload when first
+        attempting to print. Please use the print icon located at the top right
+        of the article" -- followed by blank sheets. Measured 2026-09-12: 11
+        pages, 46,510 bytes, zero images, zero text after page one, identical
+        on every attempt whatever was scrolled or awaited beforehand.
+
+        The site's print control is what prepares the document, and it ends by
+        calling window.print(). In a headless browser that opens a dialog
+        nothing can dismiss and the page stops responding, so window.print is
+        replaced with a recorder for the duration: the preparation runs, the
+        dialog never opens, and Playwright renders the prepared page.
+
+        The control itself carries no accessible name or role, so it cannot be
+        reached by aria-ref; it is found by the attributes print controls
+        conventionally carry.
         """
-        target = page
-        try:
-            best_length = -1
-            for frame in list(getattr(page, "frames", []) or []) or [page]:
-                try:
-                    text = await frame.inner_text("body")
-                except Exception:
-                    continue
-                if len(text or "") > best_length:
-                    best_length = len(text or "")
-                    target = frame
-        except Exception:
-            target = page
-        # Diagnostic: which frames exist and what they hold. Written to a file
-        # because the service's logging config does not surface warnings here.
-        try:
-            import json as _json
-            from pathlib import Path as _Path
-            rows = []
-            for fr in list(getattr(page, "frames", []) or []):
-                try:
-                    body = await fr.inner_text("body")
-                except Exception:
-                    body = ""
-                try:
-                    imgs = await fr.evaluate("() => document.images.length")
-                except Exception:
-                    imgs = -1
-                rows.append({"url": str(getattr(fr, "url", ""))[:200],
-                             "text": len(body or ""), "images": imgs})
-            _Path(r"X:\ScrapeX\data\capture_frames.json").write_text(
-                _json.dumps(rows, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-
-        report = await target.evaluate(
+        return await page.evaluate(
             """async () => {
                 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-                const scroller = (() => {
-                    const de = document.documentElement;
-                    const all = [de, document.body, ...document.querySelectorAll('*')];
-                    let best = de, bestArea = -1;
-                    for (const el of all) {
-                        if (!el) continue;
-                        const sh = el.scrollHeight || 0, ch = el.clientHeight || 0;
-                        if (ch <= 0 || sh - ch <= 8) continue;
-                        if (el !== de && el !== document.body) {
-                            const oy = getComputedStyle(el).overflowY;
-                            if (oy !== 'auto' && oy !== 'scroll' && oy !== 'overlay') continue;
+                const original = window.print;
+                let printCalled = false;
+                window.print = () => { printCalled = true; };
+                try {
+                    const selectors = [
+                        '[aria-label*="print" i]', '[title*="print" i]',
+                        '[class*="print" i]', '[id*="print" i]',
+                        '[data-testid*="print" i]',
+                    ];
+                    const seen = new Set();
+                    const candidates = [];
+                    for (const sel of selectors) {
+                        for (const el of document.querySelectorAll(sel)) {
+                            if (seen.has(el)) continue;
+                            seen.add(el);
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 0 && r.height > 0 && r.width < 120 && r.height < 120) {
+                                candidates.push(el);
+                            }
                         }
-                        const area = ch * (el.clientWidth || 0);
-                        if (area > bestArea) { bestArea = area; best = el; }
                     }
-                    return best;
-                })();
-
-                for (const img of document.images) {
-                    img.loading = 'eager';
-                    if (img.decoding) img.decoding = 'sync';
-                }
-
-                const step = Math.max(200, (scroller.clientHeight || 720) - 80);
-                const limit = (scroller.scrollHeight || 0) + step * 2;
-                for (let y = 0; y <= limit; y += step) {
-                    scroller.scrollTop = y;
-                    await sleep(160);
-                    if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2) {
-                        await sleep(240);
-                        if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2) break;
+                    let clicked = 0;
+                    for (const el of candidates.slice(0, 4)) {
+                        try { el.click(); clicked++; } catch (e) {}
+                        await sleep(700);
+                        if (printCalled) break;
                     }
+
+                    for (const img of document.images) {
+                        img.loading = 'eager';
+                    }
+                    await Promise.all(Array.from(document.images).map(img => {
+                        if (img.complete && img.naturalWidth > 0) return Promise.resolve();
+                        return new Promise(resolve => {
+                            const done = () => resolve();
+                            img.addEventListener('load', done, {once: true});
+                            img.addEventListener('error', done, {once: true});
+                            setTimeout(done, 8000);
+                        });
+                    }));
+                    await sleep(600);
+
+                    const imgs = Array.from(document.images);
+                    return {
+                        candidates: candidates.length,
+                        clicked: clicked,
+                        printCalled: printCalled,
+                        images: imgs.length,
+                        loaded: imgs.filter(i => i.complete && i.naturalWidth > 0).length,
+                    };
+                } finally {
+                    window.print = original;
                 }
-                scroller.scrollTop = 0;
-                await sleep(200);
-
-                await Promise.all(Array.from(document.images).map(img => {
-                    if (img.complete && img.naturalWidth > 0) return Promise.resolve();
-                    return new Promise(resolve => {
-                        const done = () => resolve();
-                        img.addEventListener('load', done, {once: true});
-                        img.addEventListener('error', done, {once: true});
-                        setTimeout(done, 8000);
-                    });
-                }));
-
-                const imgs = Array.from(document.images);
-                return {
-                    url: location.href.slice(0, 120),
-                    images: imgs.length,
-                    loaded: imgs.filter(i => i.complete && i.naturalWidth > 0).length,
-                    broken: imgs.filter(i => i.complete && i.naturalWidth === 0).length,
-                    scrollHeight: scroller.scrollHeight,
-                    sample: imgs.slice(0, 3).map(i => ({
-                        w: i.naturalWidth, h: i.naturalHeight,
-                        src: (i.currentSrc || i.src || '').slice(0, 90),
-                    })),
-                };
             }"""
         )
-        log.warning("navigator capture preload: %s", report)
-        # Decoding can trail the load event; give the renderer a moment.
-        await page.wait_for_timeout(1500)
 
     async def capture(self, task_id: str) -> dict[str, Any]:
         """Persist the verified leaf from this exact Navigator browser session.
@@ -491,11 +461,12 @@ class NavigatorTaskRunner:
         # So walk the document to trigger whatever lazy-loads, then wait for
         # every image to finish decoding before rendering.
         try:
-            await self._preload_images(page)
-        except Exception:
-            # Never fail a capture because preloading was imperfect; a PDF with
-            # some images missing still beats no PDF at all.
-            pass
+            prep = await self._prepare_for_print(page)
+            log.warning("navigator capture print-prep: %s", prep)
+        except Exception as exc:  # noqa: BLE001
+            # Never fail a capture because preparation was imperfect; a PDF
+            # missing some figures still beats no PDF at all.
+            log.warning("navigator capture print-prep failed: %s", type(exc).__name__)
         try:
             pdf_bytes = await page.pdf(
                 format="Letter",
