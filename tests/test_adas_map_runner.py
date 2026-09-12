@@ -361,3 +361,54 @@ async def test_shop_binding_rejects_different_portal_location(tmp_path: Path):
     refreshed = store.batch(batch_id)["items"][0]
     assert refreshed["adas_map_state"] == "ambiguous_ro"
     assert ciq.calls == []
+
+
+# --------------------------------------------------------- batch settlement
+#
+# 2026-09-12: 41 batches sat at "pending" with their ADAS Map already
+# acquired and reconciled. Only _run settled a batch, so every acquire_exact
+# -- create one-RO batch, process_one, done -- left the batch looking like
+# work that had never started, and the delete guard then refused to remove it
+# because its items had begun processing.
+
+
+@pytest.mark.asyncio
+async def test_process_one_settles_a_finished_single_ro_batch(tmp_path: Path):
+    store = RecordingStore(tmp_path / "db.sqlite")
+    batch_id = _batch(store)
+    item = store.batch(batch_id)["items"][0]
+    assert store.batch(batch_id)["state"] == "pending"
+
+    await AdasMapBatchRunner(store, FakeSource(), FakeCIQ()).process_one(item)
+
+    assert store.batch(batch_id)["state"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_process_one_leaves_a_batch_alone_while_work_remains(tmp_path: Path):
+    # Processing one RO of several is not the end of the batch; settling it
+    # here would report a half-done batch as finished.
+    store = RecordingStore(tmp_path / "db.sqlite")
+    batch_id = _batch(store, count=3)
+    item = store.batch(batch_id)["items"][0]
+
+    await AdasMapBatchRunner(store, FakeSource(), FakeCIQ()).process_one(item)
+
+    assert store.batch(batch_id)["state"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_a_settled_finished_batch_is_still_protected_from_deletion(tmp_path: Path):
+    # Settling reports the truth; it does not make finished work disposable.
+    # The delete guard reads ITEM state, so a batch that really acquired a
+    # document stays undeletable whether it is labelled "pending" or
+    # "complete". Fixing the label is the whole point: finished work had been
+    # sitting in the list looking like an unstarted backlog.
+    store = RecordingStore(tmp_path / "db.sqlite")
+    batch_id = _batch(store)
+    item = store.batch(batch_id)["items"][0]
+    await AdasMapBatchRunner(store, FakeSource(), FakeCIQ()).process_one(item)
+
+    assert store.batch(batch_id)["state"] == "complete"
+    assert store.delete_batch(batch_id)["deleted"] is False
+    assert store.delete_batch(batch_id)["reason"] == "batch_has_started"

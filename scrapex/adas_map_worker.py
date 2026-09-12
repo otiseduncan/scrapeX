@@ -92,12 +92,39 @@ class AdasMapBatchRunner:
         task = self._tasks.get(batch_id)
         return bool(task is not None and not task.done())
 
+    def _settle_batch_state(self, batch_id: str) -> None:
+        """Record the terminal state of a batch whose queue has drained."""
+        summary = self.store.adas_map_summary(batch_id)
+        attention = int(summary.get("needs_attention") or 0)
+        total = int(summary.get("total") or 0)
+        ready = int(summary.get("ready") or 0)
+        complete = bool(total and ready == total)
+        unresolved = total - ready
+        self.store.set_batch_state(
+            batch_id,
+            "complete" if complete else "paused",
+            (
+                f"{attention or unresolved} ADAS Map item(s) need attention."
+                if not complete
+                else None
+            ),
+        )
+
     async def process_one(self, item: dict[str, Any]) -> None:
         """Public, API-safe single-item entry point used by staged acceptance."""
         batch_id = str(item.get("batch_id") or "")
         if self.is_running(batch_id):
             raise RuntimeError("Pause the ADAS Map batch before processing one RO.")
         await self._process_item(item)
+        # Only _run used to settle a batch, so a batch driven item-by-item
+        # through this path -- which is every acquire_exact, the single-RO
+        # acquisition X uses -- finished its work and then stayed "pending"
+        # forever. By 2026-09-12 there were 41 such batches, each with its
+        # ADAS Map acquired and reconciled into Calibration IQ, yet
+        # indistinguishable from never-started work and impossible to delete,
+        # because the delete guard refuses a batch whose items have begun.
+        if batch_id and self.store.next_adas_map_item(batch_id, MAX_ATTEMPTS) is None:
+            self._settle_batch_state(batch_id)
 
     async def _run(self, batch_id: str) -> None:
         try:
@@ -115,20 +142,7 @@ class AdasMapBatchRunner:
             while batch_id not in self._pause:
                 item = self.store.next_adas_map_item(batch_id, MAX_ATTEMPTS)
                 if item is None:
-                    summary = self.store.adas_map_summary(batch_id)
-                    attention = int(summary.get("needs_attention") or 0)
-                    total = int(summary.get("total") or 0)
-                    ready = int(summary.get("ready") or 0)
-                    complete = bool(total and ready == total)
-                    unresolved = total - ready
-                    self.store.set_batch_state(
-                        batch_id,
-                        "complete" if complete else "paused",
-                        (
-                            f"{attention or unresolved} ADAS Map item(s) need attention."
-                            if not complete else None
-                        ),
-                    )
+                    self._settle_batch_state(batch_id)
                     return
                 try:
                     await self._process_item(item)
