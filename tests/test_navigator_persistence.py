@@ -74,12 +74,14 @@ def test_set_state_and_save_verification(tmp_path: Path):
     store.save_navigator_verification(task_id, {"verified": True, "reason": None})
     task = store.navigator_task(task_id)
     assert task["verified"] is True
-    assert task["state"] == "verified"  # verified=True promotes state automatically
+    # Mechanical verification cannot end the task: X may reject the candidate
+    # semantically and continue navigating in this same browser task.
+    assert task["state"] == "active"
 
     store.save_navigator_verification(task_id, {"verified": False, "reason": "drift"})
     task = store.navigator_task(task_id)
     assert task["verified"] is False
-    assert task["state"] == "verified"  # state itself is a separate, explicit transition
+    assert task["state"] == "active"
 
 
 def test_restart_recovery_pauses_active_navigator_tasks(tmp_path: Path):

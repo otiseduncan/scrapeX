@@ -1,17 +1,12 @@
 """Canonical evidence contract for Navigator-acquired service-information.
 
-This is the ScrapeX-side counterpart to X Omni's
-``core/services/research_verification.py::evaluate_alldata_claim`` -- same
-five-gate philosophy (domain/session presence is not evidence), adapted to
-the Navigator's Observation shape and extended with an explicit "reached a
-procedure leaf, not just a menu/result listing" gate, since dynamic
-drill-down means the terminal page can be many clicks deep and a model can
-plausibly stop one level too early.
+Domain/session presence is not evidence, and neither is a model assertion.
+This module therefore validates only facts ScrapeX can directly observe.
 
-This is the single authority on "verified" for Navigator-sourced evidence.
-Callers (the HTTP layer, X Omni's contract validators) must not recompute
-browser semantics themselves -- they only re-check the *shape* of what this
-function returns.
+This is the single authority on *mechanically verified* Navigator evidence.
+It proves browser state and extraction only.  Whether the candidate is the
+requested procedure is deliberately absent from this contract and belongs to
+X's independent semantic reviewer.
 """
 
 from __future__ import annotations
@@ -25,34 +20,26 @@ def evaluate_navigation_claim(
     *,
     target: dict[str, Any],
     target_state: dict[str, Any],
-    query_submitted: bool,
-    matched_terms: Optional[list[str]],
-    relevance_score: int,
-    is_procedure_leaf: bool,
+    navigation_performed: bool,
+    candidate_extracted: bool,
     extracted_text: Optional[str],
     source_url: str,
     provider: str,
-    min_relevance: int = 2,
 ) -> dict[str, Any]:
-    """Return a structured proof object for one Navigator task's outcome.
+    """Return mechanical proof for one Navigator candidate.
 
-    Each gate corresponds to one claim a truthful acquisition report must be
-    able to make: the target (vehicle/subject) was actually selected, a
-    search/navigation action was actually taken against it, the destination
-    is on-topic, the destination is a procedure leaf rather than a menu or a
-    search-results listing, and real content was extracted from it.
+    The gates say only that the requested vehicle is selected in the live
+    browser, X navigated after selection, X marked the current page as a
+    candidate, and ScrapeX extracted real content from that page.  Page type,
+    subject relevance, procedure completeness, and dependencies are semantic
+    judgments and are intentionally left to X.
     """
     now = datetime.now(UTC).replace(microsecond=0).isoformat()
-    matched_terms = list(matched_terms or [])
-    normalized_relevance = int(relevance_score or 0)
     base = {
         "vehicle_verified": False,
-        "subject_verified": False,
-        "procedure_leaf_verified": False,
+        "navigation_performed": bool(navigation_performed),
+        "candidate_extracted": bool(candidate_extracted),
         "content_extracted": False,
-        "query_submitted": bool(query_submitted),
-        "matched_terms": matched_terms,
-        "relevance_score": normalized_relevance,
         "source_url": source_url or None,
         "provider": provider,
         "captured_at": now,
@@ -69,54 +56,20 @@ def evaluate_navigation_claim(
         return {**base, "reason": str(reason)}
     base["vehicle_verified"] = True
 
-    if not query_submitted:
-        return {**base, "reason": "No target-scoped search/navigation action was submitted."}
+    if not navigation_performed:
+        return {**base, "reason": "No target-scoped browser navigation was performed."}
 
-    if not matched_terms:
+    if not candidate_extracted:
         return {
             **base,
-            "reason": "The destination did not contain any of the requested subject's terms.",
+            "reason": "X did not mark the current page as a candidate for extraction.",
         }
-    if normalized_relevance < min_relevance:
-        return {
-            **base,
-            "reason": (
-                f"Relevance score {normalized_relevance} is below the verification "
-                f"threshold ({min_relevance})."
-            ),
-        }
-    base["subject_verified"] = True
-
-    if not is_procedure_leaf:
-        return {
-            **base,
-            "reason": (
-                "Navigation stopped at a menu or result listing, not a procedure "
-                "leaf -- the agent must open the actual content, not just find it."
-            ),
-        }
-    base["procedure_leaf_verified"] = True
 
     text = str(extracted_text or "").strip()
     if not text:
-        return {**base, "reason": "No substantive content was extracted from the leaf page."}
+        return {**base, "reason": "No substantive content was extracted from the candidate page."}
     base["content_extracted"] = True
     base["evidence_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-    identity_tokens = [
-        str(target.get(key) or "").casefold() for key in ("year", "make") if target.get(key)
-    ]
-    folded_text = text.casefold()
-    if identity_tokens and not all(token in folded_text for token in identity_tokens):
-        return {
-            **base,
-            "content_extracted": False,
-            "evidence_sha256": None,
-            "reason": (
-                "The leaf page no longer carries the requested vehicle's identity "
-                "-- navigation may have drifted off the selected target."
-            ),
-        }
 
     return {**base, "verified": True, "reason": None}
 
@@ -126,10 +79,8 @@ def unselected_target_claim(reason: str, *, provider: str) -> dict[str, Any]:
     return evaluate_navigation_claim(
         target={},
         target_state={"selected": False, "reason": reason},
-        query_submitted=False,
-        matched_terms=None,
-        relevance_score=0,
-        is_procedure_leaf=False,
+        navigation_performed=False,
+        candidate_extracted=False,
         extracted_text=None,
         source_url="",
         provider=provider,

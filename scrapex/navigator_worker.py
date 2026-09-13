@@ -416,8 +416,8 @@ class NavigatorTaskRunner:
         if observation is None:
             proof = evaluate_navigation_claim(
                 target=task["target"], target_state={"selected": False, "reason": "No observation exists yet."},
-                query_submitted=False, matched_terms=None, relevance_score=0,
-                is_procedure_leaf=False, extracted_text=None, source_url="", provider=self.provider.slug,
+                navigation_performed=False, candidate_extracted=False,
+                extracted_text=None, source_url="", provider=self.provider.slug,
             )
             self.store.save_navigator_verification(task_id, proof)
             return proof
@@ -430,7 +430,7 @@ class NavigatorTaskRunner:
         # menu/tree navigation. Requiring a typed search made valid ALLDATA
         # drill-downs unverifiable, so any real target-scoped navigation
         # action counts while passive observe/wait/scroll/extract/done do not.
-        query_submitted = any(
+        navigation_performed = any(
             self.provider.is_search_action(step["action"])
             or str(step["action"].get("action") or "")
             in {"click", "open", "click_mark", "click_visual", "select_vehicle"}
@@ -445,21 +445,17 @@ class NavigatorTaskRunner:
             for step in steps
             if str(step["action"].get("action") or "") not in {"done", "wait"}
         ]
-        is_procedure_leaf = bool(substantive_actions) and substantive_actions[-1] == "extract"
+        candidate_extracted = bool(substantive_actions) and substantive_actions[-1] == "extract"
 
         extract = task.get("extract") if isinstance(task.get("extract"), dict) else {}
         evidence_text = str(extract.get("text") or "") if extract.get("url") == observation.url else ""
         if not evidence_text:
             evidence_text = observation.page_text
-        matched_terms, relevance_score = self.provider.match_terms(evidence_text, task["topic"])
-
         proof = evaluate_navigation_claim(
             target=task["target"],
             target_state=target_state,
-            query_submitted=query_submitted,
-            matched_terms=matched_terms,
-            relevance_score=relevance_score,
-            is_procedure_leaf=is_procedure_leaf,
+            navigation_performed=navigation_performed,
+            candidate_extracted=candidate_extracted,
             extracted_text=evidence_text,
             source_url=observation.url,
             provider=self.provider.slug,
@@ -655,10 +651,10 @@ class NavigatorTaskRunner:
         semantic_review: Any = None,
         objective: Any = None,
     ) -> dict[str, Any]:
-        """Persist the verified leaf from this exact Navigator browser session.
+        """Persist the mechanically verified candidate from this browser session.
 
         Service-information storage is always Year/Make/Model. A capture can
-        only occur after the canonical verification proof succeeded, and the
+        only occur after the canonical mechanical proof succeeded, and the
         live page URL must still equal the verified source URL. Whatever the
         caller decided about the page semantically rides along as data in the
         provenance sidecar; nothing here re-decides it.

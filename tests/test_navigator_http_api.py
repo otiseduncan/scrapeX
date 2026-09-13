@@ -122,11 +122,6 @@ class FakeProvider:
     def is_search_action(self, action):
         return action.get("action") == "fill"
 
-    def match_terms(self, text, topic):
-        words = [w for w in str(topic or "").casefold().split() if w in str(text or "").casefold()]
-        return words, len(words)
-
-
 async def _fake_status():
     return {"reachable": True, "authorized": True, "active": True, "authenticated": True}
 
@@ -214,7 +209,23 @@ def test_full_task_lifecycle_over_http(tmp_path: Path):
 
         verified = client.post(f"/api/navigator/tasks/{task_id}/verify")
         assert verified.status_code == 200
-        assert "verified" in verified.json()
+        assert verified.json()["verified"] is False
+
+        extracted = client.post(
+            f"/api/navigator/tasks/{task_id}/act", json={"action": "extract"}
+        )
+        assert extracted.status_code == 200
+        mechanically_verified = client.post(f"/api/navigator/tasks/{task_id}/verify")
+        assert mechanically_verified.status_code == 200
+        assert mechanically_verified.json()["verified"] is True
+
+        # Mechanical proof is deliberately non-terminal. X may reject this
+        # candidate semantically and continue in the same live browser task.
+        continued = client.post(
+            f"/api/navigator/tasks/{task_id}/act",
+            json={"action": "fill", "ref": search_box_ref, "text": "different branch"},
+        )
+        assert continued.status_code == 200
 
         evidence = client.get(f"/api/navigator/tasks/{task_id}/evidence")
         assert evidence.status_code == 200

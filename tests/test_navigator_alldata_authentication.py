@@ -256,10 +256,6 @@ class _StubProvider:
     def is_search_action(self, _action):
         return False
 
-    def match_terms(self, _text, _topic):
-        return [], 0
-
-
 class _StubBrowser:
     def __init__(self):
         self.pages_handed_out = 0

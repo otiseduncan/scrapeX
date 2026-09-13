@@ -49,15 +49,6 @@ class FixtureProvider:
     def is_search_action(self, action):
         return action.get("action") in ("click", "fill")
 
-    def match_terms(self, text, topic):
-        import re
-
-        words = {w for w in re.findall(r"[a-z0-9]+", str(topic or "").casefold()) if len(w) >= 3}
-        folded = str(text or "").casefold()
-        matched = sorted(w for w in words if w in folded)
-        return matched, len(matched)
-
-
 @pytest_asyncio.fixture
 async def runner(navigator_fixture_server, tmp_path: Path):
     store = Store(tmp_path / "db.sqlite")
@@ -125,8 +116,8 @@ async def test_full_navigation_reaches_and_verifies_correct_leaf(runner: Navigat
 
     assert proof["verified"] is True, proof["reason"]
     assert proof["vehicle_verified"] is True
-    assert proof["subject_verified"] is True
-    assert proof["procedure_leaf_verified"] is True
+    assert proof["navigation_performed"] is True
+    assert proof["candidate_extracted"] is True
     assert proof["content_extracted"] is True
     assert proof["evidence_sha256"]
 
@@ -186,7 +177,7 @@ async def test_task_bound_visual_observation_is_a_jpeg(runner: NavigatorTaskRunn
 
 
 @pytest.mark.asyncio
-async def test_wrong_leaf_alone_never_verifies(runner: NavigatorTaskRunner):
+async def test_scrapex_mechanically_verifies_even_an_unrelated_candidate(runner: NavigatorTaskRunner):
     task_id = runner.create_task(
         {"year": 2023, "make": "Toyota", "model": "Camry"}, "blind spot calibration", action_budget=30
     )
@@ -207,11 +198,11 @@ async def test_wrong_leaf_alone_never_verifies(runner: NavigatorTaskRunner):
     await runner.act(task_id, {"action": "extract"})
     proof = await runner.verify(task_id)
 
-    assert proof["verified"] is False
-    # No matching terms on this page, so subject-match fails before the
-    # procedure-leaf gate is even reached.
-    assert proof["subject_verified"] is False
-    assert proof["procedure_leaf_verified"] is False
+    # ScrapeX proves only that X navigated on the selected vehicle and
+    # extracted this page. X's separate reviewer must reject its meaning.
+    assert proof["verified"] is True
+    assert proof["navigation_performed"] is True
+    assert proof["candidate_extracted"] is True
 
 
 @pytest.mark.asyncio

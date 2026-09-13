@@ -724,19 +724,24 @@ class Store:
     def save_navigator_verification(
         self, task_id: str, verification: dict[str, Any]
     ) -> None:
+        """Persist mechanical proof without ending the reasoning task.
+
+        ScrapeX used to promote ``verified=True`` to a terminal state because
+        verification also contained its semantic relevance verdict. Now that
+        X alone owns meaning, a mechanically sound candidate may still be
+        rejected by X and the same browser task must remain navigable.
+        """
         verified = bool(verification.get("verified"))
         with self.conn() as db:
             db.execute(
                 """
                 UPDATE navigator_tasks
-                SET verification_json=?,verified=?,
-                    state=CASE WHEN ? THEN 'verified' ELSE state END,
-                    updated_at=?
+                SET verification_json=?,verified=?,updated_at=?
                 WHERE id=?
                 """,
                 (
                     json.dumps(verification, sort_keys=True, default=str),
-                    int(verified), int(verified), now(), task_id,
+                    int(verified), now(), task_id,
                 ),
             )
 

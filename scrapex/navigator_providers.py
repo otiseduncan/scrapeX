@@ -1,9 +1,8 @@
 """Provider adapter boundary for the Navigator.
 
-A provider encodes exactly the site-specific knowledge the generic
-observation/action/graph layers must not: what "target selected" looks like,
-what counts as a search action, and how to score relevance. Everything else
--- session, observation, actions, graph, verification shape -- is shared.
+A provider encodes exactly the site-specific mechanical knowledge the generic
+observation/action/graph layers must not: what "target selected" looks like
+and what counts as a navigation action. Everything semantic stays with X.
 """
 
 from __future__ import annotations
@@ -58,11 +57,6 @@ class NavigatorProvider(Protocol):
     def display_title(self, title: str) -> str:
         """Optional. A page title without provider furniture, for file names."""
         ...
-
-    def match_terms(self, text: str, topic: str) -> tuple[list[str], int]:
-        """Return (matched terms, relevance score) for ``text`` against ``topic``."""
-        ...
-
 
 def domain_allowed(url: str, allowed_domain_suffixes: tuple[str, ...]) -> bool:
     from urllib.parse import urlsplit

@@ -32,12 +32,10 @@ different authenticated browser contexts.
   annotated screenshots, opaque element refs, scroll/wait primitives, and backtracking/
   loop state to X Omni's model.
 - X reasons from the live page after every action instead of following a fixed menu path.
-  Each proposed procedure leaf is verified immediately against vehicle, subject,
-  procedure-leaf, and extracted-content gates. A rejected leaf is returned to X with
-  the failed gates so it can backtrack and try another route.
-- Verification recognizes common OEM-equivalent ADAS terminology (for example
-  calibration/aiming/alignment/adjustment/initialization and system aliases) without
-  converting navigation into deterministic title matching.
+  When X marks a candidate, ScrapeX proves only the selected vehicle, browser
+  navigation, candidate extraction, content bytes, URL, time, and hashes. ScrapeX
+  carries no topic matcher, OEM concept vocabulary, relevance score, or procedure-page
+  classifier; X's independent semantic reviewer alone decides meaning and dependencies.
 - Every observation carries an `observation_id`, the page identity, the viewport, the
   geometry of on-screen refs, and the visible DOM controls the accessibility tree does
   not expose. Actions bind to the observation they were chosen from: ref actions are

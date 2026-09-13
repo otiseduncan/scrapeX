@@ -171,52 +171,6 @@ def test_is_search_action_matches_fill_and_enter_press():
     assert provider.is_search_action({"action": "click", "ref": "e1"}) is False
 
 
-def test_match_terms_ignores_stopwords_and_short_tokens():
-    provider = AlldataNavigatorProvider("https://my.alldata.com/")
-    matched, score = provider.match_terms(
-        "Blind Spot Monitor Beam Axis Calibration Procedure for a 2023 Toyota Camry",
-        "blind spot monitor calibration",
-    )
-    assert "blind" in matched
-    assert "spot" in matched
-    assert "monitor" in matched
-    # "calibration" and "the"/"and"-style stopwords are filtered out.
-    assert "calibration" not in matched
-    assert score == len(matched)
-
-
-def test_match_terms_accepts_semantic_oem_aliases():
-    provider = AlldataNavigatorProvider("https://my.alldata.com/")
-    matched, score = provider.match_terms(
-        "Lane Change Assist Rear Side Radar Beam Axis Adjustment for 2023 Toyota Camry",
-        "blind spot monitor calibration",
-    )
-    assert "system:blind_spot" in matched
-    assert "operation:calibration" in matched
-    assert score >= 2
-
-
-def test_match_terms_accepts_front_radar_adjustment_for_calibration_request():
-    provider = AlldataNavigatorProvider("https://my.alldata.com/")
-    matched, score = provider.match_terms(
-        "Adaptive Cruise Control Cruise Control Module Aiming Adjustment",
-        "front radar calibration",
-    )
-    assert "system:front_radar" in matched
-    assert "operation:calibration" in matched
-    assert score >= 2
-
-
-def test_match_terms_finds_nothing_on_an_unrelated_page():
-    provider = AlldataNavigatorProvider("https://my.alldata.com/")
-    matched, score = provider.match_terms(
-        "General inspection notes: tire pressure and fluid levels.",
-        "blind spot monitor calibration",
-    )
-    assert matched == []
-    assert score == 0
-
-
 @pytest.mark.asyncio
 async def test_current_page_signals_falls_back_to_the_page_title():
     provider = AlldataNavigatorProvider("https://my.alldata.com/")
