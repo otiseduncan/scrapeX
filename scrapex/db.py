@@ -84,6 +84,14 @@ class Store:
             if name not in existing:
                 db.execute(f"ALTER TABLE items ADD COLUMN {name} {sql_type}")
 
+    def _ensure_navigator_columns(self, db):
+        existing = {
+            row["name"]
+            for row in db.execute("PRAGMA table_info(navigator_tasks)").fetchall()
+        }
+        if "extract_json" not in existing:
+            db.execute("ALTER TABLE navigator_tasks ADD COLUMN extract_json TEXT")
+
     def _init(self):
         with self.conn() as db:
             db.executescript("""
@@ -130,6 +138,7 @@ class Store:
             CREATE INDEX IF NOT EXISTS ix_navigator_steps_task ON navigator_steps(task_id,ordinal);
             """)
             self._ensure_item_columns(db)
+            self._ensure_navigator_columns(db)
 
     def recover_after_restart(self):
         with self.conn() as db:
@@ -612,6 +621,7 @@ class Store:
         d["graph"] = self._json_value(d.get("graph_json"), {})
         d["last_observation"] = self._json_value(d.get("last_observation_json"), None)
         d["verification"] = self._json_value(d.get("verification_json"), None)
+        d["extract"] = self._json_value(d.get("extract_json"), None)
         d["verified"] = bool(d.get("verified"))
         return d
 
@@ -730,6 +740,19 @@ class Store:
                 ),
             )
 
+
+    def save_navigator_extract(self, task_id: str, extract: dict[str, Any]) -> None:
+        """Persist the full text of the page the caller marked as evidence.
+
+        The cached observation keeps its bounded page_text; this is the
+        unabridged copy that verification, semantic review, and the capture
+        sidecar read, so no later step has to re-derive it from pixels.
+        """
+        with self.conn() as db:
+            db.execute(
+                "UPDATE navigator_tasks SET extract_json=?,updated_at=? WHERE id=?",
+                (json.dumps(extract, sort_keys=True, default=str), now(), task_id),
+            )
 
     def normalize_adas_map_storage_paths(self, adas_si_root: Path) -> int:
         """Rewrite persisted local ADAS Map paths to ADAS Map/<RO>/.

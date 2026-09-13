@@ -38,6 +38,17 @@ different authenticated browser contexts.
 - Verification recognizes common OEM-equivalent ADAS terminology (for example
   calibration/aiming/alignment/adjustment/initialization and system aliases) without
   converting navigation into deterministic title matching.
+- Every observation carries an `observation_id`, the page identity, the viewport, the
+  geometry of on-screen refs, and the visible DOM controls the accessibility tree does
+  not expose. Actions bind to the observation they were chosen from: ref actions are
+  checked against the ref's observed box and label, `observe` with `marks` numbers
+  ref-less controls for `click_mark`, and `click_visual` compares the target-local
+  region of the screenshot it served with the same region now. A moved, changed, or
+  unverifiable target is refused (409) with a fresh-observation instruction; ScrapeX
+  never substitutes another element.
+- `extract` records the page's full text; `capture` files the rendered page-image PDF
+  with the extracted text, breadcrumb, hashes, and the caller's semantic review beside
+  it in the provenance sidecar. `select_vehicle` is the ALLDATA exact-VIN fast path.
 - Credentials remain outside model context. The Navigator operates the authenticated
   browser session and exposes page state, not stored secrets.
 - The old ALLDATA batch runner remains retired/frozen; it is not the live SI path.

@@ -134,9 +134,39 @@ async def test_full_navigation_reaches_and_verifies_correct_leaf(runner: Navigat
     assert evidence["verified"] is True
     assert "leaf-correct" in (evidence["source_url"] or "") or "leaf-frame" in (evidence["source_url"] or "")
 
-    capture = await runner.capture(task_id)
+    review = {
+        "classification": "ACTUAL_PROCEDURE",
+        "decision": "ACCEPT",
+        "confidence": 0.9,
+        "evidence_summary": "Beam axis calibration steps with target placement.",
+    }
+    capture = await runner.capture(
+        task_id, semantic_review=review, objective={"objective": "blind spot calibration"}
+    )
     assert capture["saved"] is True
     assert capture["relative_path"].startswith("2023/Toyota/Camry/")
+    # The file is named after the page, not after the search topic.
+    assert "Beam Axis Adjustment" in capture["relative_path"]
+    assert capture["capture_method"] == "rendered_page_images"
+    # Machine-readable evidence rides beside the page-image PDF: the text the
+    # page carried, its hash, the breadcrumb, and the caller's own review.
+    import json as _json
+
+    sidecar = _json.loads((runner.adas_si_root / capture["source_sidecar"]).read_text(encoding="utf-8"))
+    assert sidecar["semantic_review"] == review
+    assert sidecar["objective"] == {"objective": "blind spot calibration"}
+    assert sidecar["saved_pdf_sha256"] == capture["sha256"]
+    assert sidecar["extracted_text_sha256"] == capture["extracted_text_sha256"]
+    assert sidecar["capture_method"] == "rendered_page_images"
+    assert sidecar["provider_export"]["attempted"] is False
+    text_path = runner.adas_si_root / capture["text_sidecar"]
+    assert "Blind Spot Monitor Beam Axis Calibration Procedure" in text_path.read_text(encoding="utf-8")
+    assert len(text_path.read_text(encoding="utf-8")) == sidecar["extracted_text_chars"]
+
+    # Capturing the same verified page again is a no-op with the same identity.
+    again = await runner.capture(task_id)
+    assert again["already_present"] is True
+    assert again["sha256"] == capture["sha256"]
 
 
 @pytest.mark.asyncio
@@ -146,10 +176,13 @@ async def test_task_bound_visual_observation_is_a_jpeg(runner: NavigatorTaskRunn
         "blind spot calibration",
         action_budget=30,
     )
-    await runner.observe(task_id)
-    image = await runner.screenshot(task_id)
+    observation = await runner.observe(task_id)
+    image, observation_id = await runner.screenshot(task_id)
     assert image.startswith(b"\xff\xd8\xff")
     assert len(image) > 100
+    # The still is bound to the observation it was drawn from, so a later
+    # coordinate action can name exactly the frame it was chosen on.
+    assert observation_id == observation["observation_id"]
 
 
 @pytest.mark.asyncio

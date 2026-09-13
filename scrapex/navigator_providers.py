@@ -47,6 +47,18 @@ class NavigatorProvider(Protocol):
         """Whether one executed action counts as "a query was submitted"."""
         ...
 
+    async def select_vehicle(self, page: Any, action: dict[str, Any]) -> dict[str, Any]:
+        """Optional mechanical fast path: select the exact vehicle the caller
+        identified (for example by VIN). Must return ``{"selected": bool, ...}``
+        with a ``reason`` when False. It executes an identity the caller
+        supplied; it never chooses a vehicle.
+        """
+        ...
+
+    def display_title(self, title: str) -> str:
+        """Optional. A page title without provider furniture, for file names."""
+        ...
+
     def match_terms(self, text: str, topic: str) -> tuple[list[str], int]:
         """Return (matched terms, relevance score) for ``text`` against ``topic``."""
         ...

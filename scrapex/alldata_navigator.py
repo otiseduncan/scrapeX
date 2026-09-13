@@ -16,6 +16,22 @@ from .models import VehicleSpec
 from .navigator_observation import build_observation
 from .provider_credentials import ALLDATA_CREDENTIALS, CredentialUnavailable
 
+PICKER_URL = "https://my.alldata.com/repair/#/select-vehicle"
+_VIN_RE = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$")
+_TITLE_SUFFIXES = (" - ALLDATA Collision", " - ALLDATA Repair", " - ALLDATA")
+_TITLE_PREFIXES = ("Vehicle Information - ",)
+# Where the picker's own search box may live. Selectors describe the field
+# by its type and role, not by ALLDATA's markup, so they survive a restyle.
+_SEARCH_BOX_SELECTORS = (
+    "input[type='search']",
+    "[role='searchbox']",
+    "input[placeholder*='VIN' i]",
+    "input[placeholder*='Search' i]",
+    "input[type='text']",
+)
+_VIN_RESOLVE_POLLS = 24
+_VIN_RESOLVE_POLL_MS = 500
+
 _STOPWORDS = frozenset({
     "the", "and", "for", "with", "this", "that", "from", "into", "your",
     "procedure", "calibration", "system",
@@ -110,6 +126,73 @@ class AlldataNavigatorProvider:
     def __init__(self, home_url: str):
         self.home_url = home_url
         self.allowed_domain_suffixes = ("alldata.com",)
+        self.picker_url = PICKER_URL
+
+    @staticmethod
+    def display_title(title: str) -> str:
+        """The page's own title without the provider's suffix or prefix."""
+        text = " ".join(str(title or "").split())
+        for prefix in _TITLE_PREFIXES:
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+        for suffix in _TITLE_SUFFIXES:
+            if text.endswith(suffix):
+                text = text[: -len(suffix)]
+        return text.strip()
+
+    async def select_vehicle(self, page: Any, action: dict[str, Any]) -> dict[str, Any]:
+        """Select the exact vehicle a VIN names, mechanically.
+
+        A VIN identifies one vehicle including trim and engine, which neither
+        a year/make/model cascade nor ALLDATA's own "<Make> Truck" shelving
+        can do. ALLDATA's picker ignores a value set programmatically (one
+        synthetic input event, no reaction) and its submit control carries no
+        accessible name, so the VIN is typed as keystrokes and the page is
+        given time to resolve on its own. Nothing here chooses a vehicle: the
+        VIN was supplied by the caller and the outcome is reported as it is.
+        """
+        vin = "".join(str(action.get("vin") or "").split()).upper()
+        if not _VIN_RE.match(vin):
+            return {"selected": False, "reason": f"{vin!r} is not a 17-character VIN."}
+        try:
+            await page.goto(self.picker_url, wait_until="load")
+            await page.wait_for_timeout(1500)
+        except Exception as exc:  # noqa: BLE001 - reported, never hidden
+            return {"selected": False, "reason": f"The vehicle picker did not open: {type(exc).__name__}."}
+        box = None
+        for selector in _SEARCH_BOX_SELECTORS:
+            candidate = page.locator(selector).first
+            try:
+                if await candidate.is_visible(timeout=1500):
+                    box = candidate
+                    break
+            except Exception:
+                continue
+        if box is None:
+            return {"selected": False, "reason": "The vehicle search box was not on the picker."}
+        try:
+            await box.click(timeout=5_000)
+            await page.keyboard.type(vin, delay=25)
+        except Exception as exc:  # noqa: BLE001
+            return {"selected": False, "reason": f"Typing the VIN failed: {type(exc).__name__}."}
+        url = ""
+        for _ in range(_VIN_RESOLVE_POLLS):
+            await page.wait_for_timeout(_VIN_RESOLVE_POLL_MS)
+            url = str(page.url or "")
+            if "/vehicle/" in url:
+                break
+        if "/vehicle/" not in url:
+            return {
+                "selected": False,
+                "vin": vin,
+                "url": url,
+                "reason": f"ALLDATA did not resolve VIN {vin} to a vehicle page.",
+            }
+        try:
+            title = await page.title()
+        except Exception:
+            title = ""
+        return {"selected": True, "vin": vin, "label": self.display_title(title), "url": url}
 
     async def authenticated(self, page: Any) -> bool:
         """Fail closed: a title-only check is not proof.
@@ -297,7 +380,7 @@ class AlldataNavigatorProvider:
 
     def is_search_action(self, action: dict[str, Any]) -> bool:
         kind = action.get("action")
-        if kind == "fill":
+        if kind in {"fill", "type", "select_vehicle"}:
             return True
         if kind == "press" and str(action.get("key") or "").casefold() == "enter":
             return True

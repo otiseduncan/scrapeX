@@ -58,14 +58,34 @@ class NavigatorTaskCreate(BaseModel):
     action_budget: int | None = Field(default=None, ge=1, le=80)
 
 
+class NavigatorObserveRequest(BaseModel):
+    # Set-of-Mark is opt-in: marks are numbered only when the caller asks,
+    # for controls the accessibility tree does not expose as usable refs.
+    marks: bool = False
+
+
 class NavigatorActionRequest(BaseModel):
     action: str = Field(min_length=1, max_length=20)
+    # The observation the caller acted from. Optional for ref actions
+    # (compatibility), required by the executor for click_mark/click_visual.
+    observation_id: str | None = Field(default=None, max_length=40)
     ref: str | None = None
     text: str | None = None
     key: str | None = None
     url: str | None = None
     delta_y: int | None = Field(default=None, ge=-1600, le=1600)
     milliseconds: int | None = Field(default=None, ge=100, le=2500)
+    mark: int | None = Field(default=None, ge=1, le=999)
+    x_norm: float | None = Field(default=None, ge=0.0, le=1.0)
+    y_norm: float | None = Field(default=None, ge=0.0, le=1.0)
+    vin: str | None = Field(default=None, min_length=11, max_length=32)
+
+
+class NavigatorCaptureRequest(BaseModel):
+    """What the caller decided about the verified page, carried as data."""
+
+    semantic_review: dict[str, Any] | None = None
+    objective: dict[str, Any] | None = None
 
 
 class NavigatorRemoteInput(BaseModel):
@@ -267,6 +287,15 @@ _NAVIGATOR_ERROR_STATUS = {
     "invalid_arguments": 422,
     "domain_not_allowed": 422,
     "unknown_ref": 422,
+    "unknown_mark": 422,
+    "provider_unsupported": 422,
+    # A binding that no longer holds is a conflict with the live page: the
+    # caller must observe again. Never a redirect to another target.
+    "stale_ref": 409,
+    "stale_observation": 409,
+    "stale_target": 409,
+    "stale_visual_target": 409,
+    "visual_frame_missing": 409,
     # 409 is also the unmapped default, but an authentication blocker is the
     # one a caller branches on, so state it rather than leave it implicit.
     "authentication_required": 409,
@@ -301,7 +330,10 @@ async def _navigator_call(call):
     try:
         return await call()
     except NavigatorTaskError as exc:
-        raise HTTPException(_NAVIGATOR_ERROR_STATUS.get(exc.code, 409), exc.message) from exc
+        detail: Any = exc.message
+        if exc.detail:
+            detail = {"code": exc.code, "message": exc.message, **exc.detail}
+        raise HTTPException(_NAVIGATOR_ERROR_STATUS.get(exc.code, 409), detail) from exc
 
 
 async def _ensure_adas_map_authenticated(services: AppServices) -> dict[str, Any]:
@@ -440,10 +472,13 @@ async def get_navigator_task(request: Request, task_id: str) -> dict[str, Any]:
 
 
 @router.post("/api/navigator/tasks/{task_id}/observe")
-async def observe_navigator_task(request: Request, task_id: str) -> dict[str, Any]:
+async def observe_navigator_task(
+    request: Request, task_id: str, payload: NavigatorObserveRequest | None = None
+) -> dict[str, Any]:
     services = _services(request)
     runner, _ = _navigator_runner_for_task(services, task_id)
-    return await _navigator_call(lambda: runner.observe(task_id))
+    marks = bool(payload.marks) if payload is not None else False
+    return await _navigator_call(lambda: runner.observe(task_id, marks=marks))
 
 
 @router.post("/api/navigator/tasks/{task_id}/act")
@@ -469,24 +504,36 @@ async def navigator_task_evidence(request: Request, task_id: str) -> dict[str, A
 
 
 @router.post("/api/navigator/tasks/{task_id}/capture")
-async def navigator_task_capture(request: Request, task_id: str) -> dict[str, Any]:
+async def navigator_task_capture(
+    request: Request, task_id: str, payload: NavigatorCaptureRequest | None = None
+) -> dict[str, Any]:
     """Preserve the verified leaf from this exact Navigator browser session."""
     services = _services(request)
     runner, _ = _navigator_runner_for_task(services, task_id)
-    return await _navigator_call(lambda: runner.capture(task_id))
+    review = payload.semantic_review if payload is not None else None
+    objective = payload.objective if payload is not None else None
+    return await _navigator_call(
+        lambda: runner.capture(task_id, semantic_review=review, objective=objective)
+    )
 
 
 @router.get("/api/navigator/tasks/{task_id}/screenshot")
-async def navigator_task_screenshot(request: Request, task_id: str) -> Response:
+async def navigator_task_screenshot(
+    request: Request, task_id: str, observation_id: str | None = None
+) -> Response:
     """Task-bound visual observation for X Omni's multimodal Navigator loop.
 
     Unlike the provider-level screenshot used for human MFA/CAPTCHA handoff,
-    this image is tied to an existing task and annotated only with refs from
-    that task's latest cached accessibility observation.
+    this image is tied to an existing task and annotated only with refs and
+    marks from that task's latest cached accessibility observation. The
+    observation it belongs to is echoed in ``X-ScrapeX-Observation-Id`` so a
+    later coordinate action can name exactly the frame it was chosen from.
     """
     services = _services(request)
     runner, _ = _navigator_runner_for_task(services, task_id)
-    jpeg_bytes = await _navigator_call(lambda: runner.screenshot(task_id))
+    jpeg_bytes, bound_observation = await _navigator_call(
+        lambda: runner.screenshot(task_id, observation_id=observation_id)
+    )
     return Response(
         content=jpeg_bytes,
         media_type="image/jpeg",
@@ -494,6 +541,7 @@ async def navigator_task_screenshot(request: Request, task_id: str) -> Response:
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
             "X-ScrapeX-Task-Id": task_id,
+            "X-ScrapeX-Observation-Id": bound_observation or "",
         },
     )
 
