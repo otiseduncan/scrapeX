@@ -31,6 +31,8 @@ _SEARCH_BOX_SELECTORS = (
 )
 _VIN_RESOLVE_POLLS = 24
 _VIN_RESOLVE_POLL_MS = 500
+_VIN_CONFIRM_POLLS = 8
+_VIN_CONFIRM_POLL_MS = 250
 
 _STOPWORDS = frozenset({
     "the", "and", "for", "with", "this", "that", "from", "into", "your",
@@ -188,11 +190,39 @@ class AlldataNavigatorProvider:
                 "url": url,
                 "reason": f"ALLDATA did not resolve VIN {vin} to a vehicle page.",
             }
-        try:
-            title = await page.title()
-        except Exception:
-            title = ""
-        return {"selected": True, "vin": vin, "label": self.display_title(title), "url": url}
+        # A /vehicle/ route alone is not proof that the VIN search landed. The
+        # provider can restore the previously open vehicle while its picker is
+        # settling, which used to make this fast path report selected=True for
+        # a stale, different VIN. ALLDATA renders the resolved VIN in the
+        # vehicle header, so require that exact value before returning success.
+        title = ""
+        observed_text = ""
+        for _ in range(_VIN_CONFIRM_POLLS):
+            try:
+                title = await page.title()
+            except Exception:
+                title = ""
+            try:
+                observed_text = await page.locator("body").inner_text(timeout=2_500)
+            except Exception:
+                observed_text = ""
+            if vin in "".join(str(observed_text or "").split()).upper():
+                return {
+                    "selected": True,
+                    "vin": vin,
+                    "label": self.display_title(title),
+                    "url": str(page.url or url),
+                }
+            await page.wait_for_timeout(_VIN_CONFIRM_POLL_MS)
+        return {
+            "selected": False,
+            "vin": vin,
+            "label": self.display_title(title),
+            "url": str(page.url or url),
+            "reason": (
+                f"ALLDATA opened a vehicle page, but it did not show the requested VIN {vin}."
+            ),
+        }
 
     async def authenticated(self, page: Any) -> bool:
         """Fail closed: a title-only check is not proof.

@@ -21,12 +21,19 @@ def test_display_title_strips_provider_furniture_only():
 class _VinPage:
     """A picker that resolves a typed VIN to a vehicle page, the way ALLDATA does."""
 
-    def __init__(self, *, resolves: bool = True, search_box: bool = True):
+    def __init__(
+        self,
+        *,
+        resolves: bool = True,
+        search_box: bool = True,
+        resolved_vin: str | None = None,
+    ):
         self.url = "https://my.alldata.com/repair/#/home"
         self._resolves = resolves
         self._search_box = search_box
         self.typed: list[str] = []
         self.goto_calls: list[str] = []
+        self.resolved_vin = resolved_vin
         self.keyboard = self
 
     async def goto(self, url, wait_until=None):
@@ -49,6 +56,11 @@ class _VinPage:
 
             async def click(self, timeout=None):
                 return None
+
+            async def inner_text(self, timeout=None):
+                if selector != "body":
+                    return ""
+                return page.resolved_vin or (page.typed[-1] if page.typed else "")
 
         return _Box()
 
@@ -87,6 +99,13 @@ async def test_select_vehicle_reports_an_invalid_vin_and_an_unresolved_one_truth
         _VinPage(search_box=False), {"vin": "2HGFC2F59MH500001"}
     )
     assert no_box["selected"] is False and "search box" in no_box["reason"]
+
+    wrong_vehicle = await provider.select_vehicle(
+        _VinPage(resolved_vin="1HGCY2F73RA095331"),
+        {"vin": "1HGCY1F35PA033515"},
+    )
+    assert wrong_vehicle["selected"] is False
+    assert "did not show the requested VIN" in wrong_vehicle["reason"]
 
 
 def test_type_and_select_vehicle_count_as_target_scoped_searches():
