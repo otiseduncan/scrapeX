@@ -18,6 +18,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
+          python -m playwright install --with-deps chromium
+          mkdir -p "$HOME/bin"
+          ln -sf "$(command -v pwsh)" "$HOME/bin/powershell.exe"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
       - name: Full ScrapeX suite
         run: python -m pytest -q
       - name: Compile changed modules
