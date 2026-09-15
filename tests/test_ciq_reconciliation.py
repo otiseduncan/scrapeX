@@ -2,7 +2,12 @@ import copy
 
 import pytest
 
-from scrapex.ciq import CIQClient, CIQReconciliationError, calibration_key
+from scrapex.ciq import (
+    RECONCILIATION_CONTRACT_VERSION,
+    CIQClient,
+    CIQReconciliationError,
+    calibration_key,
+)
 from scrapex.models import VehicleSpec
 
 
@@ -158,6 +163,17 @@ async def test_reconciliation_updates_only_observed_vehicle_fields_with_ro_versi
         "vehicle_configuration": {"drive": "FWD", "seats": 7},
     }
     assert result["vehicle_changed"]["mutation_id"] == "mutation-1"
+    expected_identity = {
+        "reconciliation_contract_version": RECONCILIATION_CONTRACT_VERSION,
+        "operation": "update_ro",
+        "repair_order_id": "ro-1",
+        "expected_version": 4,
+        "arguments": update["arguments"],
+        "inspection_id": "9900001",
+    }
+    legacy_identity = {key: value for key, value in expected_identity.items() if key != "reconciliation_contract_version"}
+    assert update["idempotency_key"] == client._idempotency(expected_identity)
+    assert update["idempotency_key"] != client._idempotency(legacy_identity)
 
 
 @pytest.mark.asyncio

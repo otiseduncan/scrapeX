@@ -1207,6 +1207,7 @@ class CIQClient:
         if vehicle_changes:
             ro_version = max(1, int(current_ro.get("version") or before.get("version") or 1))
             identity = {
+                "reconciliation_contract_version": RECONCILIATION_CONTRACT_VERSION,
                 "operation": "update_ro",
                 "repair_order_id": repair_order_id,
                 "expected_version": ro_version,
