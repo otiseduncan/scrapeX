@@ -28,11 +28,18 @@ def evaluate_navigation_claim(
 ) -> dict[str, Any]:
     """Return mechanical proof for one Navigator candidate.
 
-    The gates say only that the requested vehicle is selected in the live
-    browser, X navigated after selection, X marked the current page as a
-    candidate, and ScrapeX extracted real content from that page.  Page type,
-    subject relevance, procedure completeness, and dependencies are semantic
-    judgments and are intentionally left to X.
+    The hard gates prove only facts ScrapeX can observe directly: the requested
+    vehicle is selected in the live browser, X explicitly marked the current
+    page as a candidate, and ScrapeX extracted substantive content from it.
+
+    ``navigation_performed`` remains audit telemetry, but it is deliberately
+    not an evidence gate. A new task can begin on a page left open by the
+    preceding task for the same exact vehicle. Requiring a meaningless click,
+    open, or vehicle re-selection before ``extract`` caused those inherited
+    candidate pages to be rejected *before* X's independent semantic reviewer
+    could judge them. Page type, subject relevance, procedure completeness,
+    and dependencies remain semantic judgments and are intentionally absent
+    from this contract.
     """
     now = datetime.now(UTC).replace(microsecond=0).isoformat()
     base = {
@@ -55,9 +62,6 @@ def evaluate_navigation_claim(
         )
         return {**base, "reason": str(reason)}
     base["vehicle_verified"] = True
-
-    if not navigation_performed:
-        return {**base, "reason": "No target-scoped browser navigation was performed."}
 
     if not candidate_extracted:
         return {
