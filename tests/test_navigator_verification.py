@@ -35,11 +35,21 @@ def test_target_not_selected_fails_first_gate():
     assert "no vehicle chosen" in result["reason"]
 
 
-def test_no_navigation_performed_fails():
+def test_no_navigation_is_audited_but_does_not_block_inherited_candidate():
     result = _claim(navigation_performed=False)
-    assert result["verified"] is False
+    assert result["verified"] is True
     assert result["vehicle_verified"] is True
-    assert "navigation" in result["reason"].casefold()
+    assert result["navigation_performed"] is False
+    assert result["candidate_extracted"] is True
+    assert result["content_extracted"] is True
+    assert result["reason"] is None
+
+
+def test_no_navigation_does_not_weaken_explicit_candidate_gate():
+    result = _claim(navigation_performed=False, candidate_extracted=False)
+    assert result["verified"] is False
+    assert result["navigation_performed"] is False
+    assert "candidate" in result["reason"].casefold()
 
 
 def test_candidate_not_extracted_fails():
