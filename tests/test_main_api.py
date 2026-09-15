@@ -58,6 +58,7 @@ class FakeAdasRunner:
         self.started: list[str] = []
         self.paused: list[str] = []
         self.processed: list[str] = []
+        self.repaired: list[list[str]] = []
 
     async def start(self, batch_id: str):
         self.started.append(batch_id)
@@ -95,6 +96,16 @@ class FakeAdasRunner:
             ),
             final_state="pending",
         )
+
+    async def repair_proven_vins(self, ro_numbers):
+        self.repaired.append(list(ro_numbers))
+        return {
+            "requested_count": len(ro_numbers),
+            "repaired_count": len(ro_numbers),
+            "results": [
+                {"ro_number": value, "status": "repaired"} for value in ro_numbers
+            ],
+        }
 
 
 def vehicle(ro_number: str, *, shop: str = "Macon") -> VehicleSpec:
@@ -198,6 +209,19 @@ def test_health_dashboard_and_production_route_surface(tmp_path: Path):
                 "The retired legacy ALLDATA batch runner remains frozen."
             ),
         }
+
+
+def test_proven_vin_repair_endpoint_is_explicit_and_bounded(tmp_path: Path):
+    services = make_services(tmp_path)
+    with TestClient(create_app(services)) as client:
+        response = client.post(
+            "/api/adas-map/repair-proven-vins",
+            json={"ro_numbers": ["2400711794"]},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["repaired_count"] == 1
+    assert services.adas_map_runner.repaired == [["2400711794"]]
 
 
 def test_exact_ciq_batch_is_bounded_and_authoritative(tmp_path: Path):

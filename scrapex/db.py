@@ -65,6 +65,8 @@ class Store:
             "adas_map_source_url": "TEXT",
             "adas_map_inspection_id": "TEXT",
             "adas_map_vin": "TEXT",
+            "adas_map_identity_proven": "INTEGER NOT NULL DEFAULT 0",
+            "adas_map_identity_json": "TEXT",
             "adas_map_vehicle_label": "TEXT",
             "adas_map_calibrations_json": "TEXT",
             "adas_map_requirements_json": "TEXT",
@@ -75,6 +77,10 @@ class Store:
             "adas_map_last_error": "TEXT",
             "adas_map_checked_at": "TEXT",
             "ciq_reconciliation_state": "TEXT NOT NULL DEFAULT 'pending'",
+            "ciq_identity_state": "TEXT NOT NULL DEFAULT 'pending'",
+            "ciq_identity_json": "TEXT",
+            "ciq_identity_error": "TEXT",
+            "ciq_identity_reconciled_at": "TEXT",
             "ciq_adas_map_verified": "INTEGER NOT NULL DEFAULT 0",
             "ciq_reconciliation_json": "TEXT",
             "ciq_reconciliation_error": "TEXT",
@@ -332,11 +338,14 @@ class Store:
             "model","trim","engine","configuration_json","requirements_json",
             "adas_map_state","adas_map_contract_version","adas_map_attempts","adas_map_url",
             "adas_map_source_url","adas_map_inspection_id","adas_map_vin",
+            "adas_map_identity_proven","adas_map_identity_json",
             "adas_map_vehicle_label","adas_map_calibrations_json",
             "adas_map_requirements_json","adas_map_alldata_links_json",
             "adas_map_report_links_json","adas_map_raw_result_json",
             "adas_map_requirements_proven","adas_map_last_error",
             "adas_map_checked_at","ciq_reconciliation_state",
+            "ciq_identity_state","ciq_identity_json","ciq_identity_error",
+            "ciq_identity_reconciled_at",
             "ciq_adas_map_verified","ciq_reconciliation_json","ciq_reconciliation_error",
             "ciq_reconciled_at",
         }
@@ -386,6 +395,36 @@ class Store:
             ciq_reconciliation_error=error,
             ciq_reconciled_at=now(),
         )
+
+    def save_identity_reconciliation(
+        self,
+        item_id: str,
+        state: str,
+        result: dict[str, Any] | None,
+        error: str | None = None,
+    ) -> None:
+        payload = result if isinstance(result, dict) else {}
+        self.set_item(
+            item_id,
+            self.item_state(item_id),
+            ciq_identity_state=state,
+            ciq_identity_json=json.dumps(payload, sort_keys=True),
+            ciq_identity_error=error,
+            ciq_identity_reconciled_at=now(),
+        )
+
+    def items_for_ro_numbers(self, ro_numbers: list[str]) -> list[dict[str, Any]]:
+        values = [str(value or "").strip() for value in ro_numbers]
+        values = list(dict.fromkeys(value for value in values if value))
+        if not values:
+            return []
+        marks = ",".join("?" for _ in values)
+        with self.conn() as db:
+            rows = db.execute(
+                f"SELECT * FROM items WHERE ro_number IN ({marks}) ORDER BY updated_at DESC",
+                values,
+            ).fetchall()
+        return [self._item(row) for row in rows]
 
     def record_document(self,item_id,title,source_url,canonical_url,article_id,sha256,relative_path,status):
         with self.conn() as db:

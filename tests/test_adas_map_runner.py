@@ -54,6 +54,17 @@ def _success(ro_number: str) -> dict:
         "vehicle_label": "2016 Toyota Sienna L FWD w/7-Passenger Seating",
         "inspection_id": "9900001",
         "row_binding_confirmed": True,
+        "vehicle_identity_proven": True,
+        "identity_evidence": {
+            "proven": True,
+            "source": "adas_map_bound_ro_row",
+            "ro_number": ro_number,
+            "ciq_ro_id": f"ro-{ro_number[-1]}",
+            "shop": "Gerber Collision & Glass - Macon",
+            "inspection_id": "9900001",
+            "vin": "TESTCAR0000000001",
+            "row_binding_confirmed": True,
+        },
         "modal_inspection_confirmed": True,
         "modal_runtime_id": "42.9900001",
         "required_region_confirmed": True,
@@ -80,6 +91,20 @@ def _success(ro_number: str) -> dict:
 class FakeCIQ:
     def __init__(self):
         self.calls = []
+        self.identity_calls = []
+        self.identity_error = None
+
+    async def reconcile_vehicle_identity(self, **kwargs):
+        self.identity_calls.append(kwargs)
+        if self.identity_error is not None:
+            raise self.identity_error
+        return {
+            "verified": True,
+            "snapshot_verified": True,
+            "repair_order_id": kwargs["repair_order_id"],
+            "vin": kwargs["vin"],
+            "receipt_count": 1,
+        }
 
     async def reconcile_requirements(self, **kwargs):
         self.calls.append(kwargs)
@@ -361,6 +386,121 @@ async def test_shop_binding_rejects_different_portal_location(tmp_path: Path):
     refreshed = store.batch(batch_id)["items"][0]
     assert refreshed["adas_map_state"] == "ambiguous_ro"
     assert ciq.calls == []
+
+
+@pytest.mark.asyncio
+async def test_proven_vin_survives_later_navigation_failure(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite")
+    batch_id = _batch(store)
+    item = store.batch(batch_id)["items"][0]
+    ciq = FakeCIQ()
+    source = FakeSource()
+
+    async def failed_after_identity(ro_number, shop, expected):
+        result = _success(ro_number)
+        result.update(
+            {
+                "success": False,
+                "status": "view_did_not_navigate",
+                "reason": "ADAS Map detail navigation was not authoritatively proven.",
+            }
+        )
+        return result
+
+    source.lookup = failed_after_identity
+    await AdasMapBatchRunner(store, source, ciq).process_one(item)
+
+    refreshed = store.batch(batch_id)["items"][0]
+    assert refreshed["adas_map_state"] == "view_did_not_navigate"
+    assert refreshed["adas_map_identity_proven"] == 1
+    assert refreshed["adas_map_vin"] == "TESTCAR0000000001"
+    assert refreshed["vin"] == "TESTCAR0000000001"
+    assert refreshed["ciq_identity_state"] == "complete"
+    assert refreshed["ciq_reconciliation_state"] == "pending"
+    assert ciq.identity_calls[0]["repair_order_id"] == "ro-1"
+    assert ciq.calls == []
+    assert store.pipeline_summary(batch_id)["ready"] == 0
+
+
+@pytest.mark.asyncio
+async def test_same_ro_vin_conflict_never_overwrites_ciq(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite")
+    batch_id = _batch(store)
+    item = store.batch(batch_id)["items"][0]
+    ciq = FakeCIQ()
+    ciq.identity_error = adas_worker_module.CIQReconciliationError(
+        "ADAS Map VIN conflicts with the VIN already stored on this repair order.",
+        result={"stored_vin": "TESTCAR0000000002"},
+    )
+
+    await AdasMapBatchRunner(store, FakeSource(), ciq).process_one(item)
+
+    refreshed = store.batch(batch_id)["items"][0]
+    assert refreshed["adas_map_state"] == "needs_operator"
+    assert refreshed["adas_map_vin"] == "TESTCAR0000000001"
+    assert refreshed["ciq_identity_state"] == "needs_operator"
+    assert "conflicts" in refreshed["ciq_identity_error"]
+    assert ciq.calls == []
+
+
+@pytest.mark.asyncio
+async def test_unproven_failure_payload_vin_is_not_persisted(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite")
+    batch_id = _batch(store)
+    item = store.batch(batch_id)["items"][0]
+    ciq = FakeCIQ()
+    source = FakeSource()
+
+    async def unproven(ro_number, shop, expected):
+        return {
+            "success": False,
+            "status": "view_did_not_navigate",
+            "ro_number": ro_number,
+            "shop": "Gerber Collision & Glass - Macon",
+            "vin": "TESTCAR0000000001",
+            "inspection_id": "9900001",
+        }
+
+    source.lookup = unproven
+    await AdasMapBatchRunner(store, source, ciq).process_one(item)
+
+    refreshed = store.batch(batch_id)["items"][0]
+    assert refreshed["adas_map_vin"] is None
+    assert refreshed["adas_map_identity_proven"] == 0
+    assert ciq.identity_calls == []
+
+
+@pytest.mark.asyncio
+async def test_bounded_backfill_repairs_legacy_post_binding_failure_only(tmp_path: Path):
+    store = Store(tmp_path / "db.sqlite")
+    batch_id = _batch(store)
+    item = store.batch(batch_id)["items"][0]
+    raw = {
+        "success": False,
+        "status": "view_did_not_navigate",
+        "ro_number": item["ro_number"],
+        "shop": "Gerber Collision & Glass - Macon",
+        "vin": "TESTCAR0000000001",
+        "inspection_id": "9900001",
+        "detail_close": {"status": "details_not_open"},
+    }
+    store.checkpoint_adas_map(
+        item["id"],
+        "view_did_not_navigate",
+        adas_map_raw_result_json=adas_worker_module.json.dumps(raw),
+    )
+    ciq = FakeCIQ()
+
+    result = await AdasMapBatchRunner(store, FakeSource(), ciq).repair_proven_vins(
+        [item["ro_number"]]
+    )
+
+    refreshed = store.batch(batch_id)["items"][0]
+    assert result["repaired_count"] == 1
+    assert refreshed["adas_map_state"] == "view_did_not_navigate"
+    assert refreshed["adas_map_identity_proven"] == 1
+    assert refreshed["adas_map_vin"] == "TESTCAR0000000001"
+    assert ciq.identity_calls
 
 
 # --------------------------------------------------------- batch settlement

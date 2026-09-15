@@ -3,11 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any
 
 from .storage_policy import adas_map_pdf_path
+
+
+_VIN_RE = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$")
 
 
 def _compact_text(value: Any) -> str:
@@ -498,6 +502,20 @@ class WorkChromeAdasMapSource:
                 "reason": lookup_vehicle_label,
             }
 
+        lookup_vin = _compact_text(lookup_result.get("vin")).upper()
+        identity_evidence: dict[str, Any] | None = None
+        if _VIN_RE.fullmatch(lookup_vin):
+            identity_evidence = {
+                "proven": True,
+                "source": "adas_map_bound_ro_row",
+                "ro_number": ro_number,
+                "ciq_ro_id": _expected_field(expected, "ro_id") if expected else None,
+                "shop": observed_shop,
+                "inspection_id": inspection_id,
+                "vin": lookup_vin,
+                "row_binding_confirmed": True,
+            }
+
         details_result = await self.bridge.details_test(
             ro_number,
             inspection_id=inspection_id,
@@ -508,6 +526,12 @@ class WorkChromeAdasMapSource:
         async def finish_details(payload: dict[str, Any]) -> dict[str, Any]:
             payload.setdefault("lookup_row_expansion", lookup_row_expansion)
             payload.setdefault("details_row_expansion", details_result.get("row_expansion"))
+            if identity_evidence is not None:
+                payload.setdefault("vehicle_identity_proven", True)
+                payload.setdefault("identity_evidence", identity_evidence)
+                payload.setdefault("ciq_ro_id", identity_evidence.get("ciq_ro_id"))
+                payload.setdefault("row_binding_confirmed", True)
+                payload.setdefault("vin", identity_evidence["vin"])
             try:
                 close_result = await self.bridge.close_details()
             except Exception as exc:  # A dirty modal is an operator-visible failure.
@@ -531,6 +555,7 @@ class WorkChromeAdasMapSource:
                 payload["download_modal_close_verified"] = True
             if payload.get("success") and not closed:
                 return {
+                    **payload,
                     "success": False,
                     "status": "details_close_failed",
                     "ro_number": ro_number,
@@ -557,7 +582,7 @@ class WorkChromeAdasMapSource:
                 "ciq_requested_shop": shop,
                 "reason": details_result.get("message")
                 or f"ADAS Map details returned '{ps_status}'.",
-                "vin": details_result.get("vin"),
+                "vin": lookup_vin or details_result.get("vin"),
                 "inspection_id": details_result.get("inspection_id") or inspection_id,
             })
 

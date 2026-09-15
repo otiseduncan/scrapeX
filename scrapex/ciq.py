@@ -15,6 +15,7 @@ from .models import CalibrationSnapshot, VehicleSpec
 PAGE_SIZE = 100
 MAX_ROWS = 500
 RECONCILIATION_CONTRACT_VERSION = 3
+VEHICLE_IDENTITY_CONTRACT_VERSION = 1
 
 ACTIVE_DETERMINATIONS = {"REQUIRED", "LIKELY_REQUIRED", "NEEDS_RESEARCH"}
 INACTIVE_DETERMINATIONS = {"NOT_REQUIRED", "REMOVED_AFTER_REVIEW"}
@@ -96,6 +97,14 @@ def _valid_authoritative_requirement(value: Any) -> bool:
         return False
     key = calibration_key(text)
     return bool(key) and bool(re.search(r"[a-z]{2}", folded)) and len(text.split()) <= 18
+
+
+def _shop_key(value: Any) -> str:
+    folded = " ".join(str(value or "").casefold().split())
+    for key in ("warner robins", "macon", "perry"):
+        if key in folded:
+            return key.replace(" ", "_")
+    return re.sub(r"[^a-z0-9]+", "", folded)
 
 class CIQClient:
     def __init__(self, settings: Settings):
@@ -1021,6 +1030,152 @@ class CIQClient:
             }
 
         return snapshot, attachment, research_started, receipts
+
+    async def reconcile_vehicle_identity(
+        self,
+        *,
+        repair_order_id: str,
+        vin: str,
+        batch_id: str,
+        item_id: str,
+        inspection_id: str,
+        adas_map_ro_number: str,
+        observed_shop: str,
+        expected_shop: str,
+    ) -> dict[str, Any]:
+        """Persist one independently proven ADAS Map VIN with receipt proof.
+
+        This does not attach a report, change research state, or reconcile
+        calibrations. Those later workflow stages remain independent.
+        """
+        repair_order_id = str(repair_order_id or "").strip()
+        vin = str(vin or "").strip().upper()
+        adas_map_ro_number = str(adas_map_ro_number or "").strip()
+        inspection_id = str(inspection_id or "").strip()
+        observed_shop = " ".join(str(observed_shop or "").split())
+        expected_shop = " ".join(str(expected_shop or "").split())
+        if not repair_order_id or not adas_map_ro_number or not inspection_id:
+            raise CIQReconciliationError(
+                "ADAS Map vehicle identity is missing its RO or inspection binding."
+            )
+        if not re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", vin):
+            raise CIQReconciliationError("ADAS Map returned an invalid VIN.")
+        if (
+            not observed_shop
+            or not expected_shop
+            or _shop_key(observed_shop) != _shop_key(expected_shop)
+        ):
+            raise CIQReconciliationError(
+                "ADAS Map vehicle identity is not bound to the requested CIQ shop."
+            )
+
+        await self.operator_capabilities()
+        before = await self._snapshot(repair_order_id)
+        current_ro = before.get("repair_order") if isinstance(before.get("repair_order"), dict) else {}
+        current_vehicle = before.get("vehicle") if isinstance(before.get("vehicle"), dict) else {}
+        snapshot_id = str(current_ro.get("id") or "").strip()
+        snapshot_ro_number = str(
+            current_ro.get("ro_number") or current_ro.get("number") or current_ro.get("RO") or ""
+        ).strip()
+        if snapshot_id != repair_order_id or snapshot_ro_number != adas_map_ro_number:
+            raise CIQReconciliationError(
+                "Calibration IQ snapshot does not match the proven ADAS Map repair order."
+            )
+        snapshot_shop_value = before.get("shop")
+        snapshot_shop = snapshot_shop_value if isinstance(snapshot_shop_value, dict) else {}
+        location = before.get("location") if isinstance(before.get("location"), dict) else {}
+        ciq_shop = str(
+            current_ro.get("shop")
+            or current_ro.get("shop_name")
+            or current_ro.get("location_name")
+            or (snapshot_shop_value if isinstance(snapshot_shop_value, str) else "")
+            or snapshot_shop.get("name")
+            or snapshot_shop.get("display_name")
+            or location.get("name")
+            or location.get("display_name")
+            or ""
+        ).strip()
+        if ciq_shop and _shop_key(ciq_shop) != _shop_key(expected_shop):
+            raise CIQReconciliationError(
+                "Calibration IQ snapshot shop does not match the proven ADAS Map shop."
+            )
+
+        current_vin = str(
+            current_ro.get("vin") or current_vehicle.get("vin") or ""
+        ).strip().upper()
+        if current_vin and current_vin != vin:
+            raise CIQReconciliationError(
+                "ADAS Map VIN conflicts with the VIN already stored on this repair order.",
+                result={
+                    "repair_order_id": repair_order_id,
+                    "stored_vin": current_vin,
+                    "adas_map_vin": vin,
+                },
+            )
+
+        receipts: list[dict[str, Any]] = []
+        vehicle_changed: dict[str, Any] | None = None
+        if not current_vin:
+            expected_version = max(
+                1, int(current_ro.get("version") or before.get("version") or 1)
+            )
+            identity = {
+                "vehicle_identity_contract_version": VEHICLE_IDENTITY_CONTRACT_VERSION,
+                "operation": "update_ro",
+                "repair_order_id": repair_order_id,
+                "ro_number": adas_map_ro_number,
+                "expected_version": expected_version,
+                "arguments": {"vin": vin},
+                "inspection_id": inspection_id,
+            }
+            action = {
+                "idempotency_key": self._idempotency(identity),
+                "correlation_id": f"scrapex-vin-{batch_id[:18]}-{item_id[:18]}"[:80],
+                "operation": "update_ro",
+                "repair_order_id": repair_order_id,
+                "expected_version": expected_version,
+                "arguments": {"vin": vin},
+            }
+            response = await self._post_actions([action])
+            receipts = list(response.get("receipts") or [])
+            receipt = receipts[0]
+            vehicle_changed = {
+                "operation": "update_ro",
+                "mutation_id": receipt.get("mutation_id"),
+                "idempotency_key": receipt.get("idempotency_key"),
+                "replayed": bool(receipt.get("replayed")),
+                "changes": {"vin": vin},
+            }
+
+        after = await self._snapshot(repair_order_id)
+        after_ro = after.get("repair_order") if isinstance(after.get("repair_order"), dict) else {}
+        after_vehicle = after.get("vehicle") if isinstance(after.get("vehicle"), dict) else {}
+        verified_vin = str(
+            after_ro.get("vin") or after_vehicle.get("vin") or ""
+        ).strip().upper()
+        verified_id = str(after_ro.get("id") or "").strip()
+        verified_ro_number = str(
+            after_ro.get("ro_number") or after_ro.get("number") or after_ro.get("RO") or ""
+        ).strip()
+        if (
+            verified_id != repair_order_id
+            or verified_ro_number != adas_map_ro_number
+            or verified_vin != vin
+        ):
+            raise CIQReconciliationError(
+                "CIQ authoritative reread did not verify the proven ADAS Map VIN.",
+                result={"receipts": receipts},
+            )
+        return {
+            "verified": True,
+            "snapshot_verified": True,
+            "repair_order_id": repair_order_id,
+            "ro_number": adas_map_ro_number,
+            "inspection_id": inspection_id,
+            "vin": vin,
+            "vehicle_changed": vehicle_changed,
+            "receipt_count": len(receipts),
+        }
 
     async def reconcile_requirements(
         self,

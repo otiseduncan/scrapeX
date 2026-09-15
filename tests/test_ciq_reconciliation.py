@@ -969,3 +969,86 @@ async def test_non_duplicate_vin_refusal_still_fails_closed():
             inspection_id="9900001",
             vehicle={"vin": "TESTCAR0000000001"},
         )
+
+
+@pytest.mark.asyncio
+async def test_vehicle_identity_reconciliation_writes_and_rereads_only_vin():
+    current = snapshot()
+    current["repair_order"].update(
+        {"ro_number": "9000000001", "shop": "Gerber Collision & Glass - Macon"}
+    )
+    client = FakeCIQ(current)
+
+    result = await client.reconcile_vehicle_identity(
+        repair_order_id="ro-1",
+        vin="TESTCAR0000000001",
+        batch_id="batch-1",
+        item_id="item-1",
+        inspection_id="9900001",
+        adas_map_ro_number="9000000001",
+        observed_shop="Gerber Collision & Glass - Macon/Mercer University",
+        expected_shop="Macon",
+    )
+
+    assert result["verified"] is True
+    assert result["snapshot_verified"] is True
+    assert result["receipt_count"] == 1
+    assert client.snapshot["repair_order"]["vin"] == "TESTCAR0000000001"
+    assert [action["operation"] for action in client.actions] == ["update_ro"]
+    assert client.actions[0]["arguments"] == {"vin": "TESTCAR0000000001"}
+
+
+@pytest.mark.asyncio
+async def test_vehicle_identity_reconciliation_same_ro_conflict_fails_closed():
+    current = snapshot()
+    current["repair_order"].update(
+        {
+            "ro_number": "9000000001",
+            "shop": "Macon",
+            "vin": "TESTCAR0000000002",
+        }
+    )
+    client = FakeCIQ(current)
+
+    with pytest.raises(CIQReconciliationError, match="VIN conflicts"):
+        await client.reconcile_vehicle_identity(
+            repair_order_id="ro-1",
+            vin="TESTCAR0000000001",
+            batch_id="batch-1",
+            item_id="item-1",
+            inspection_id="9900001",
+            adas_map_ro_number="9000000001",
+            observed_shop="Macon",
+            expected_shop="Macon",
+        )
+
+    assert client.actions == []
+    assert client.snapshot["repair_order"]["vin"] == "TESTCAR0000000002"
+
+
+@pytest.mark.asyncio
+async def test_vehicle_identity_reconciliation_is_idempotent_when_vin_is_present():
+    current = snapshot()
+    current["repair_order"].update(
+        {
+            "ro_number": "9000000001",
+            "shop": "Macon",
+            "vin": "TESTCAR0000000001",
+        }
+    )
+    client = FakeCIQ(current)
+
+    result = await client.reconcile_vehicle_identity(
+        repair_order_id="ro-1",
+        vin="TESTCAR0000000001",
+        batch_id="batch-1",
+        item_id="item-1",
+        inspection_id="9900001",
+        adas_map_ro_number="9000000001",
+        observed_shop="Macon",
+        expected_shop="Macon",
+    )
+
+    assert result["receipt_count"] == 0
+    assert result["vehicle_changed"] is None
+    assert client.actions == []

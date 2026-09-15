@@ -51,6 +51,12 @@ class ExactCIQBatchCreate(BaseModel):
     source_scope: Literal["active", "all", "terminal"] = "all"
 
 
+class ProvenVinRepairRequest(BaseModel):
+    """Explicit, bounded repair of stored post-binding ADAS Map VIN proof."""
+
+    ro_numbers: list[str] = Field(min_length=1, max_length=100)
+
+
 class NavigatorTaskCreate(BaseModel):
     provider: str = Field(default="alldata", min_length=1, max_length=40)
     target: dict[str, Any] = Field(default_factory=dict)
@@ -430,6 +436,20 @@ async def adas_map_status(request: Request) -> dict[str, Any]:
 @router.post("/api/adas-map/open")
 async def adas_map_open(request: Request) -> dict[str, Any]:
     return await _services(request).adas_map_source.open()
+
+
+@router.post("/api/adas-map/repair-proven-vins")
+async def repair_proven_adas_map_vins(
+    request: Request,
+    payload: ProvenVinRepairRequest,
+) -> dict[str, Any]:
+    """Backfill only exact ROs whose stored result carries authoritative proof."""
+    try:
+        return await _services(request).adas_map_runner.repair_proven_vins(
+            payload.ro_numbers
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.get("/api/work-chrome/status")

@@ -37,6 +37,11 @@ _RETRYABLE_STATUSES = {
     "bridge_invalid_json",
 }
 _VIN_RE = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$")
+_LEGACY_POST_BINDING_FAILURES = {
+    "view_did_not_navigate",
+    "requirements_unparsed",
+    "details_close_failed",
+}
 
 
 def _shop_key(value: Any) -> str:
@@ -184,6 +189,194 @@ class AdasMapBatchRunner:
             ).strip()
         return str(requirement or "").strip()
 
+    @staticmethod
+    def _proven_identity(
+        item: dict[str, Any],
+        result: dict[str, Any],
+        *,
+        allow_legacy: bool = False,
+    ) -> dict[str, Any] | None:
+        expected_ro = str(item.get("ro_number") or "").strip()
+        expected_ciq_id = str(item.get("ro_id") or "").strip()
+        expected_shop = " ".join(str(item.get("shop") or "").split())
+        if not expected_ro or not expected_ciq_id or not expected_shop:
+            return None
+
+        evidence = result.get("identity_evidence")
+        explicit = bool(
+            result.get("vehicle_identity_proven") is True
+            and isinstance(evidence, dict)
+            and evidence.get("proven") is True
+            and evidence.get("source") == "adas_map_bound_ro_row"
+            and evidence.get("row_binding_confirmed") is True
+        )
+        if explicit:
+            candidate = evidence
+            if str(candidate.get("ciq_ro_id") or "").strip() != expected_ciq_id:
+                return None
+        elif allow_legacy:
+            # Contract-v3 WorkChrome post-binding failures were emitted only
+            # after exact RO row, shop, inspection, and vehicle checks passed,
+            # but did not copy the explicit proof marker into the failure JSON.
+            # Initial lookup failures carry bridge_status and are excluded.
+            if not (
+                int(item.get("adas_map_contract_version") or 0)
+                == ADAS_MAP_CONTRACT_VERSION
+                and result.get("success") is False
+                and str(result.get("status") or "") in _LEGACY_POST_BINDING_FAILURES
+                and not result.get("bridge_status")
+                and isinstance(result.get("detail_close"), dict)
+            ):
+                return None
+            candidate = result
+        else:
+            return None
+
+        returned_ro = str(candidate.get("ro_number") or "").strip()
+        returned_shop = " ".join(str(candidate.get("shop") or "").split())
+        inspection_id = str(candidate.get("inspection_id") or "").strip()
+        vin = str(candidate.get("vin") or "").strip().upper()
+        if (
+            returned_ro != expected_ro
+            or _shop_key(returned_shop) != _shop_key(expected_shop)
+            or not inspection_id
+            or not _VIN_RE.fullmatch(vin)
+        ):
+            return None
+        return {
+            "proven": True,
+            "source": (
+                "adas_map_bound_ro_row"
+                if explicit
+                else "legacy_work_chrome_post_binding_failure_v3"
+            ),
+            "ro_number": expected_ro,
+            "ciq_ro_id": expected_ciq_id,
+            "shop": returned_shop,
+            "inspection_id": inspection_id,
+            "vin": vin,
+            "row_binding_confirmed": True,
+        }
+
+    async def _persist_proven_identity(
+        self,
+        item: dict[str, Any],
+        result: dict[str, Any],
+        *,
+        allow_legacy: bool = False,
+        checkpoint: bool = True,
+    ) -> dict[str, Any] | None:
+        evidence = self._proven_identity(item, result, allow_legacy=allow_legacy)
+        if evidence is None:
+            return None
+        item_id = str(item["id"])
+        fields = {
+            "vin": evidence["vin"],
+            "adas_map_vin": evidence["vin"],
+            "adas_map_inspection_id": evidence["inspection_id"],
+            "adas_map_identity_proven": 1,
+            "adas_map_identity_json": json.dumps(evidence, sort_keys=True),
+        }
+        if checkpoint:
+            self.store.checkpoint_adas_map(item_id, "vin_verified", **fields)
+        else:
+            self.store.set_item(item_id, self.store.item_state(item_id), **fields)
+
+        if self.ciq is None:
+            message = "Calibration IQ operator client is unavailable for VIN persistence."
+            self.store.save_identity_reconciliation(item_id, "needs_operator", None, message)
+            raise CIQReconciliationError(message)
+        try:
+            reconciled = await self.ciq.reconcile_vehicle_identity(
+                repair_order_id=evidence["ciq_ro_id"],
+                vin=evidence["vin"],
+                batch_id=str(item.get("batch_id") or ""),
+                item_id=item_id,
+                inspection_id=evidence["inspection_id"],
+                adas_map_ro_number=evidence["ro_number"],
+                observed_shop=evidence["shop"],
+                expected_shop=str(item.get("shop") or ""),
+            )
+        except CIQReconciliationError as exc:
+            self.store.save_identity_reconciliation(
+                item_id, "needs_operator", exc.result, str(exc)
+            )
+            raise
+        self.store.save_identity_reconciliation(item_id, "complete", reconciled)
+        return evidence
+
+    async def repair_proven_vins(self, ro_numbers: list[str]) -> dict[str, Any]:
+        requested = list(
+            dict.fromkeys(
+                str(value or "").strip()
+                for value in ro_numbers
+                if str(value or "").strip()
+            )
+        )
+        if not requested or len(requested) > 100:
+            raise ValueError("Provide between 1 and 100 exact RO numbers.")
+        rows = self.store.items_for_ro_numbers(requested)
+        repaired: list[dict[str, Any]] = []
+        for ro_number in requested:
+            candidates = [
+                row
+                for row in rows
+                if str(row.get("ro_number") or "").strip() == ro_number
+            ]
+            eligible: list[
+                tuple[dict[str, Any], dict[str, Any], dict[str, Any]]
+            ] = []
+            for candidate in candidates:
+                try:
+                    raw = json.loads(candidate.get("adas_map_raw_result_json") or "{}")
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(raw, dict):
+                    continue
+                proof = self._proven_identity(candidate, raw, allow_legacy=True)
+                if proof is not None:
+                    eligible.append((candidate, raw, proof))
+            if not eligible:
+                repaired.append({"ro_number": ro_number, "status": "unverified"})
+                continue
+            ro_ids = {
+                str(row.get("ro_id") or "").strip() for row, _, _ in eligible
+            }
+            vins = {proof["vin"] for _, _, proof in eligible}
+            if len(ro_ids) != 1 or not next(iter(ro_ids)) or len(vins) != 1:
+                repaired.append({"ro_number": ro_number, "status": "identity_conflict"})
+                continue
+            candidate, raw, _ = eligible[0]
+            try:
+                proof = await self._persist_proven_identity(
+                    candidate,
+                    raw,
+                    allow_legacy=True,
+                    checkpoint=False,
+                )
+            except CIQReconciliationError as exc:
+                repaired.append(
+                    {
+                        "ro_number": ro_number,
+                        "status": "identity_conflict",
+                        "error": str(exc),
+                    }
+                )
+                continue
+            repaired.append(
+                {
+                    "ro_number": ro_number,
+                    "status": "repaired",
+                    "vin": proof["vin"] if proof else None,
+                    "item_id": candidate["id"],
+                }
+            )
+        return {
+            "requested_count": len(requested),
+            "repaired_count": sum(row["status"] == "repaired" for row in repaired),
+            "results": repaired,
+        }
+
     async def _process_item(self, item: dict[str, Any]) -> None:
         item_id = item["id"]
         current_contract = int(item.get("adas_map_contract_version") or 0)
@@ -227,6 +420,20 @@ class AdasMapBatchRunner:
             shop=item.get("shop"),
             expected=expected,
         )
+        if self._proven_identity(item, result) is not None:
+            self.store.checkpoint_adas_map(item_id, "ro_found")
+        try:
+            proven_identity = await self._persist_proven_identity(item, result)
+        except CIQReconciliationError as exc:
+            self.store.checkpoint_adas_map(
+                item_id,
+                "needs_operator",
+                adas_map_attempts=attempts,
+                adas_map_last_error=f"CIQ vehicle identity reconciliation failed: {exc}",
+                adas_map_raw_result_json=json.dumps(result, sort_keys=True, default=str),
+                adas_map_checked_at=checked_at,
+            )
+            return
         if not result.get("success"):
             source_status = str(result.get("status") or "retryable_bridge_error")
             if source_status in _RETRYABLE_STATUSES and attempts < MAX_ATTEMPTS:
@@ -306,7 +513,8 @@ class AdasMapBatchRunner:
                 adas_map_checked_at=checked_at,
             )
             return
-        self.store.checkpoint_adas_map(item_id, "ro_found")
+        if proven_identity is None:
+            self.store.checkpoint_adas_map(item_id, "ro_found")
 
         vin = str(result.get("vin") or "").strip().upper()
         if not _VIN_RE.fullmatch(vin):
@@ -317,7 +525,8 @@ class AdasMapBatchRunner:
                 adas_map_checked_at=checked_at,
             )
             return
-        self.store.checkpoint_adas_map(item_id, "vin_verified", adas_map_vin=vin)
+        if proven_identity is None:
+            self.store.checkpoint_adas_map(item_id, "vin_verified", adas_map_vin=vin)
 
         inspection_id = str(result.get("inspection_id") or "").strip()
         source_url = str(result.get("source_url") or result.get("details_url") or "").strip()
