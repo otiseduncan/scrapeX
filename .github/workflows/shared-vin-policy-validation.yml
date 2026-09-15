@@ -1,4 +1,4 @@
-name: Shared VIN reconciliation validation
+name: Shared VIN policy validation
 
 on:
   push:
@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Apply shared-VIN reconciliation policy
+      - name: Version vehicle reconciliation idempotency
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -34,28 +34,19 @@ jobs:
 
           replace_once(
               "scrapex/ciq.py",
-              '''\ndef _refused_as_duplicate_vin(exc: CIQReconciliationError, idempotency_key: str) -> bool:\n    """True only when CIQ refused this exact update_ro for a duplicate VIN."""\n    for receipt in exc.result.get("receipts") or []:\n        if isinstance(receipt, dict) and receipt.get("idempotency_key") == idempotency_key:\n            error = receipt.get("error") if isinstance(receipt.get("error"), dict) else {}\n            return str(error.get("code") or "").strip().casefold() == "duplicate_vin"\n    return False\n\n''',
-              '''\n''',
+              '''            identity = {\n                "operation": "update_ro",\n                "repair_order_id": repair_order_id,\n                "expected_version": ro_version,\n                "arguments": vehicle_changes,\n                "inspection_id": inspection_id,\n            }\n''',
+              '''            identity = {\n                "reconciliation_contract_version": RECONCILIATION_CONTRACT_VERSION,\n                "operation": "update_ro",\n                "repair_order_id": repair_order_id,\n                "expected_version": ro_version,\n                "arguments": vehicle_changes,\n                "inspection_id": inspection_id,\n            }\n''',
           )
           replace_once(
-              "scrapex/ciq.py",
-              '''            current = current_ro.get(target_field)\n            if current in (None, ""):\n                current = current_vehicle.get(target_field)\n            if str(current or "").strip().casefold() != str(observed).strip().casefold():\n                vehicle_changes[target_field] = observed\n''',
-              '''            current = current_ro.get(target_field)\n            if current in (None, ""):\n                current = current_vehicle.get(target_field)\n            differs = (\n                str(current or "").strip().casefold()\n                != str(observed).strip().casefold()\n            )\n            if target_field == "vin" and current not in (None, "") and differs:\n                raise CIQReconciliationError(\n                    "ADAS Map VIN conflicts with the VIN already stored on this repair order.",\n                    result={\n                        "repair_order_id": repair_order_id,\n                        "stored_vin": str(current).strip().upper(),\n                        "adas_map_vin": str(observed).strip().upper(),\n                    },\n                )\n            if differs:\n                vehicle_changes[target_field] = observed\n''',
-          )
-          old_retry = '''        vin_not_written: dict[str, Any] | None = None\n        try:\n            response = await self._post_actions(wire_actions)\n        except CIQReconciliationError as exc:\n            # CIQ allows one active RO per VIN. A second claim on the same car\n            # (back-to-back RO numbers, e.g. 2400911765/2400911766) is still a\n            # valid RO -- it just cannot also carry the VIN. Leave CIQ's VIN\n            # as it is and keep every other change; any other refusal fails.\n            vehicle_plan = next(\n                (plan for plan in planned if plan.get("_kind") == "vehicle"), None\n            )\n            if (\n                vehicle_plan is None\n                or "vin" not in vehicle_changes\n                or not _refused_as_duplicate_vin(exc, vehicle_plan["idempotency_key"])\n            ):\n                raise\n            vin_not_written = {\n                "vin": vehicle_changes.pop("vin"),\n                "reason": "duplicate_vin",\n            }\n            if vehicle_changes:\n                identity = {\n                    "operation": "update_ro",\n                    "repair_order_id": repair_order_id,\n                    "expected_version": vehicle_plan["expected_version"],\n                    "arguments": vehicle_changes,\n                    "inspection_id": inspection_id,\n                }\n                vehicle_plan["arguments"] = vehicle_changes\n                vehicle_plan["idempotency_key"] = self._idempotency(identity)\n            else:\n                planned.remove(vehicle_plan)\n            wire_actions = [\n                {key: value for key, value in action.items() if not key.startswith("_")}\n                for action in planned\n            ]\n            response = await self._post_actions(wire_actions)\n'''
-          replace_once(
-              "scrapex/ciq.py",
-              old_retry,
-              '''        response = await self._post_actions(wire_actions)\n''',
+              "tests/test_ciq_reconciliation.py",
+              '''from scrapex.ciq import CIQClient, CIQReconciliationError, calibration_key\n''',
+              '''from scrapex.ciq import (\n    RECONCILIATION_CONTRACT_VERSION,\n    CIQClient,\n    CIQReconciliationError,\n    calibration_key,\n)\n''',
           )
           replace_once(
-              "scrapex/ciq.py",
-              '''            "vin_not_written": vin_not_written,\n''',
-              '''            "vin_not_written": None,\n''',
+              "tests/test_ciq_reconciliation.py",
+              '''    assert result["vehicle_changed"]["mutation_id"] == "mutation-1"\n\n\n@pytest.mark.asyncio\nasync def test_live_map_configuration_is_merged_without_clobbering_ro_configuration():\n''',
+              '''    assert result["vehicle_changed"]["mutation_id"] == "mutation-1"\n    expected_identity = {\n        "reconciliation_contract_version": RECONCILIATION_CONTRACT_VERSION,\n        "operation": "update_ro",\n        "repair_order_id": "ro-1",\n        "expected_version": 4,\n        "arguments": update["arguments"],\n        "inspection_id": "9900001",\n    }\n    legacy_identity = {key: value for key, value in expected_identity.items() if key != "reconciliation_contract_version"}\n    assert update["idempotency_key"] == client._idempotency(expected_identity)\n    assert update["idempotency_key"] != client._idempotency(legacy_identity)\n\n\n@pytest.mark.asyncio\nasync def test_live_map_configuration_is_merged_without_clobbering_ro_configuration():\n''',
           )
-          old_test = '''class DuplicateVinCIQ(FakeCIQ):\n    """CIQ refuses a VIN that another active RO already carries."""\n\n    async def _post_actions(self, actions):\n        refused = next(\n            (\n                action for action in actions\n                if action["operation"] == "update_ro" and "vin" in action["arguments"]\n            ),\n            None,\n        )\n        if refused is None:\n            return await super()._post_actions(actions)\n        self.actions.extend(copy.deepcopy(actions))\n        receipts = [\n            {\n                "idempotency_key": action["idempotency_key"],\n                "operation": action["operation"],\n                "status": "failed" if action is refused else "completed",\n                "success": action is not refused,\n                "error": (\n                    {"code": "duplicate_vin", "message": "An active vehicle with this VIN already exists."}\n                    if action is refused\n                    else None\n                ),\n                "verification": {"verified": action is not refused},\n            }\n            for action in actions\n        ]\n        raise CIQReconciliationError(\n            "Calibration IQ did not return a verified completed receipt for update_ro.",\n            result={"receipts": receipts},\n        )\n\n\n@pytest.mark.asyncio\nasync def test_duplicate_vin_refusal_keeps_other_vehicle_fields_and_requirements():\n    client = DuplicateVinCIQ(snapshot())\n    result = await client.reconcile_requirements(\n        repair_order_id="ro-1",\n        requirements=["Seat Belt"],\n        batch_id="batch-1",\n        item_id="item-1",\n        inspection_id="9900001",\n        vehicle={"vin": "TESTCAR0000000001", "model": "Sienna L FWD"},\n    )\n\n    assert result["verified"] is True\n    assert result["vin_not_written"] == {"vin": "TESTCAR0000000001", "reason": "duplicate_vin"}\n    assert client.snapshot["repair_order"]["vin"] is None\n    assert client.snapshot["repair_order"]["model"] == "Sienna L FWD"\n    assert any(\n        row["calibration_type"] == "Seat Belt" and row["determination"] == "REQUIRED"\n        for row in client.snapshot["calibrations"]\n    )\n\n\n'''
-          new_test = '''@pytest.mark.asyncio\nasync def test_existing_different_vin_on_same_ro_fails_closed_before_mutation():\n    current = snapshot()\n    current["repair_order"]["vin"] = "TESTCAR0000000001"\n    current["vehicle"]["vin"] = "TESTCAR0000000001"\n    client = FakeCIQ(current)\n\n    with pytest.raises(CIQReconciliationError, match="VIN conflicts") as captured:\n        await client.reconcile_requirements(\n            repair_order_id="ro-1",\n            requirements=["Seat Belt"],\n            batch_id="batch-1",\n            item_id="item-1",\n            inspection_id="9900001",\n            vehicle={"vin": "TESTCAR0000000002", "model": "Sienna L FWD"},\n        )\n\n    assert captured.value.result["stored_vin"] == "TESTCAR0000000001"\n    assert captured.value.result["adas_map_vin"] == "TESTCAR0000000002"\n    assert client.actions == []\n    assert client.snapshot["repair_order"]["vin"] == "TESTCAR0000000001"\n\n\n'''
-          replace_once("tests/test_ciq_reconciliation.py", old_test, new_test)
           PY
       - name: Install test dependencies
         run: |
@@ -72,5 +63,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add scrapex/ciq.py tests/test_ciq_reconciliation.py
-          git commit -m "Use repair orders as identity when VINs repeat [skip ci]"
+          git commit -m "Version corrected VIN reconciliation mutations [skip ci]"
           git push origin HEAD:fix/ro-identity-allows-shared-vin-20260915
